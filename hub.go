@@ -81,8 +81,12 @@ func (h *Hub) run() {
 			}
 		case p := <-h.unregister:
 			if players, ok := h.clients[p.gameId]; ok {
-				close(players.white.send)
-				close(players.black.send)
+				if players.white.send != nil {
+					close(players.white.send)
+				}
+				if players.black.send != nil {
+					close(players.black.send)
+				}
 				delete(h.clients, p.gameId)
 			}
 		case move := <-h.broadcast:
@@ -93,16 +97,24 @@ func (h *Hub) run() {
 				select {
 				case players.black.send <- move.move:
 				default:
-					close(players.white.send)
-					close(players.black.send)
+					if players.white.send != nil {
+						close(players.white.send)
+					}
+					if players.black.send != nil {
+						close(players.black.send)
+					}
 					delete(h.clients, move.game)
 				}
 			case "b":
 				select {
 				case players.white.send <- move.move:
 				default:
-					close(players.white.send)
-					close(players.black.send)
+					if players.white.send != nil {
+						close(players.white.send)
+					}
+					if players.black.send != nil {
+						close(players.black.send)
+					}
 					delete(h.clients, move.game)
 				}
 			default:
