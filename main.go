@@ -52,18 +52,58 @@ func (rout *router) makeRoom(r room) {
 	rout.rooms[r.gameId] = r
 }
 
+func (rout *router) waitingRoom(uid string, opp chan room) (playRoomId string, color string) {
+	deadline := time.NewTimer(5 * time.Second)
+	rout.m.Lock()
+	if rout.waiting3min == "" {
+		rout.waiting3min = uid
+		rout.m.Unlock()
+		select {
+		case room := <-opp:
+			deadline.Stop()
+			if room.gameId == "" {
+				// game cancelled
+				return
+			}
+			room.white = uid
+			rout.makeRoom(room)
+			playRoomId = room.gameId
+			color = "white"
+		case <-deadline.C:
+			rout.m.Lock()
+			defer rout.m.Unlock()
+			rout.waiting3min = ""
+			return
+		}
+	} else {
+		if rout.waiting3min == uid {
+			// reset
+			opp<- room{}
+			rout.waiting3min = ""
+			rout.m.Unlock()
+			return rout.waitingRoom(uid, opp)
+		}
+		playRoomId = ksuid.New().String()
+		opp<- room{
+			gameId: playRoomId,
+			black:  uid,
+		}
+		rout.waiting3min = ""
+		rout.m.Unlock()
+		color = "black"
+	}
+	return
+}
+
 func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 	session, err := rout.store.Get(r, "sess")
 	if err != nil {
 		log.Printf("Get cookie error: %v", err)
 	}
 	uidBlob := session.Values["uid"]
-	color := ""
 	var uid string
 	var ok bool
-	log.Printf("session.Values: %v", session.Values)
 	if uid, ok = uidBlob.(string); !ok {
-		log.Println("generating new id")
 		uid = ksuid.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
@@ -71,47 +111,16 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	playRoomId := ""
 	vars := mux.Vars(r)
 	if vars["clock"] == "" {
 		http.Error(w, "Empty clock time", http.StatusBadRequest)
 		return
 	}
+	color := ""
+	playRoomId := ""
 	switch vars["clock"] {
 	case "3":
-		rout.m.Lock()
-		if rout.waiting3min == "" {
-			rout.waiting3min = uid
-			rout.m.Unlock()
-			room := <-rout.opp3min
-			if room.gameId == "" {
-				// game cancelled
-				log.Println("game cancelled")
-				return
-			}
-			room.white = uid
-			rout.makeRoom(room)
-			playRoomId = room.gameId
-			color = "white"
-		} else {
-			if rout.waiting3min == uid {
-				log.Println("reseting")
-				// reset
-				rout.opp3min<- room{}
-				rout.waiting3min = ""
-				rout.m.Unlock()
-				rout.handlePlay(w, r)
-				return
-			}
-			playRoomId = ksuid.New().String()
-			rout.opp3min<- room{
-				gameId: playRoomId,
-				black:  uid,
-			}
-			rout.waiting3min = ""
-			rout.m.Unlock()
-			color = "black"
-		}
+		playRoomId, color = rout.waitingRoom(uid, rout.opp3min)
 	case "5":
 	case "10":
 	default:
@@ -146,7 +155,11 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	}
 	vars := mux.Vars(r)
 	gameId := vars["id"]
-	room := rout.rooms[gameId]
+	room, ok := rout.rooms[gameId]
+	if !ok {
+		http.Error(w, "Room not found", http.StatusNotFound)
+		return
+	}
 	color := ""
 	switch uid {
 	case room.white:
