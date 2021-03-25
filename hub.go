@@ -23,6 +23,9 @@ type Hub struct {
 
 	// Unregister requests from clients.
 	unregister chan player
+
+	// Games mapped to their result
+	results map[string]string
 }
 
 type game struct {
@@ -36,9 +39,10 @@ type players struct {
 }
 
 type move struct {
-	game  string
-	Color string `json="color"`
-	move  []byte
+	game   string
+	Color  string `json="color"`
+	move   []byte
+	result string
 }
 
 func newHub() *Hub {
@@ -48,6 +52,10 @@ func newHub() *Hub {
 		unregister: make(chan player),
 		clients:    make(map[string]players), // map game ids to players
 	}
+}
+
+func (h *Hub) result(gameId string) {
+	return h.results[gameId]
 }
 
 func (h *Hub) run() {
