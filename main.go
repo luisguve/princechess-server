@@ -122,7 +122,9 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 	case "3":
 		playRoomId, color = rout.waitingRoom(uid, rout.opp3min)
 	case "5":
+		playRoomId, color = rout.waitingRoom(uid, rout.opp5min)
 	case "10":
+		playRoomId, color = rout.waitingRoom(uid, rout.opp10min)
 	default:
 		http.Error(w, "Invalid clock time: " + vars["clock"], http.StatusBadRequest)
 		return
