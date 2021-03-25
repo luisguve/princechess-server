@@ -107,7 +107,8 @@ func (p *player) writePump() {
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				// The hub closed the channel.
-				p.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				payload := websocket.FormatCloseMessage(1001, "")
+				p.conn.WriteMessage(websocket.CloseMessage, payload)
 				return
 			}
 
