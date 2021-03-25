@@ -175,6 +175,7 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	cleanup := func() {
 		rout.m.Lock()
 		defer rout.m.Unlock()
+		rout.count--
 		delete(rout.rooms, gameId)
 	}
 	rout.serveGame(w, r, gameId, color, cleanup)
