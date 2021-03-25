@@ -14,7 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
-	"github.com/gorilla/securecookie"
+	"github.com/joho/godotenv"
     "github.com/rs/cors"
 	"github.com/segmentio/ksuid"
 )
@@ -27,9 +27,9 @@ type router struct {
 	store        *sessions.CookieStore
 	count        int
 	rooms        map[string]room // map game ids to rooms
-	waiting3min  bool
-	waiting5min  bool
-	waiting10min bool
+	waiting3min  string // ids of users
+	waiting5min  string
+	waiting10min string
 	opp3min      chan room
 	opp5min      chan room
 	opp10min     chan room
@@ -53,15 +53,20 @@ func (rout *router) makeRoom(r room) {
 }
 
 func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
-	session, _ := rout.store.Get(r, "sess")
+	session, err := rout.store.Get(r, "sess")
+	if err != nil {
+		log.Printf("Get cookie error: %v", err)
+	}
 	uidBlob := session.Values["uid"]
 	color := ""
 	var uid string
 	var ok bool
+	log.Printf("session.Values: %v", session.Values)
 	if uid, ok = uidBlob.(string); !ok {
+		log.Println("generating new id")
 		uid = ksuid.New().String()
 		session.Values["uid"] = uid
-		if err := session.Save(r, w); err != nil {
+		if err := rout.store.Save(r, w, session); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -75,21 +80,35 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 	switch vars["clock"] {
 	case "3":
 		rout.m.Lock()
-		if !rout.waiting3min {
-			rout.waiting3min = true
+		if rout.waiting3min == "" {
+			rout.waiting3min = uid
 			rout.m.Unlock()
 			room := <-rout.opp3min
+			if room.gameId == "" {
+				// game cancelled
+				log.Println("game cancelled")
+				return
+			}
 			room.white = uid
 			rout.makeRoom(room)
 			playRoomId = room.gameId
 			color = "white"
 		} else {
+			if rout.waiting3min == uid {
+				log.Println("reseting")
+				// reset
+				rout.opp3min<- room{}
+				rout.waiting3min = ""
+				rout.m.Unlock()
+				rout.handlePlay(w, r)
+				return
+			}
 			playRoomId = ksuid.New().String()
 			rout.opp3min<- room{
 				gameId: playRoomId,
 				black:  uid,
 			}
-			rout.waiting3min = false
+			rout.waiting3min = ""
 			rout.m.Unlock()
 			color = "black"
 		}
@@ -150,12 +169,17 @@ func main() {
 	flag.Parse()
 	hub := newHub()
 	go hub.run()
+	env, err := godotenv.Read("cookie_hash.env")
+	if err != nil {
+		log.Fatal(err)
+	}
+	key := env["SESSION_KEY"]
 	rout := &router{
 		hub:       hub,
 		m:         &sync.Mutex{},
 		count:     0,
 		rooms:     make(map[string]room),
-		store:     sessions.NewCookieStore(securecookie.GenerateRandomKey(32)),
+		store:     sessions.NewCookieStore([]byte(key)),
 		opp3min:   make(chan room),
 		opp5min:   make(chan room),
 		opp10min:  make(chan room),
