@@ -4,7 +4,10 @@
 
 package main
 
-import "log"
+import (
+	"log"
+	"time"
+)
 
 // Hub maintains the set of active clients and broadcasts messages to the
 // clients.
@@ -17,6 +20,9 @@ type Hub struct {
 	// broadcast chan []byte
 	broadcast chan move
 
+	// Channel to know that a player ran out of time
+	broadcastNoTime chan player
+
 	// Register requests from the clients.
 	// register chan *Client
 	register chan player
@@ -25,13 +31,13 @@ type Hub struct {
 	unregister chan player
 
 	// Games mapped to their result
-	results map[string]string
+	// games map[string]game
 }
 
-type game struct {
+/*type game struct {
 	id string
 	players
-}
+}*/
 
 type players struct {
 	white player
@@ -52,10 +58,6 @@ func newHub() *Hub {
 		unregister: make(chan player),
 		clients:    make(map[string]players), // map game ids to players
 	}
-}
-
-func (h *Hub) result(gameId string) {
-	return h.results[gameId]
 }
 
 func (h *Hub) run() {
@@ -92,41 +94,90 @@ func (h *Hub) run() {
 				if players.white.send != nil {
 					close(players.white.send)
 				}
+				players.white.clock.Stop()
+				//if !players.white.clock.Stop() {
+				//	<-players.white.clock.C
+				//}
 				if players.black.send != nil {
 					close(players.black.send)
 				}
+				players.black.clock.Stop()
+				//if !players.black.clock.Stop() {
+				//	<-players.black.clock.C
+				//}
 				delete(h.clients, p.gameId)
 			}
 		case move := <-h.broadcast:
 			players := h.clients[move.game]
+			var turn, opp player
+			var white, black *player
 
 			switch move.Color {
 			case "w":
-				select {
-				case players.black.send <- move.move:
-				default:
-					if players.white.send != nil {
-						close(players.white.send)
-					}
-					if players.black.send != nil {
-						close(players.black.send)
-					}
-					delete(h.clients, move.game)
-				}
+				turn = players.white
+				white = &turn
+				opp = players.black
+				black = &opp
 			case "b":
-				select {
-				case players.white.send <- move.move:
-				default:
-					if players.white.send != nil {
-						close(players.white.send)
-					}
-					if players.black.send != nil {
-						close(players.black.send)
-					}
-					delete(h.clients, move.game)
-				}
+				turn = players.black
+				black = &turn
+				opp = players.white
+				white = &opp
 			default:
 				log.Println("Invalid color move:", move.Color)
+			}
+
+			elapsed := 0 * time.Second
+			now := time.Now()
+
+			// Update elapsed time if not the first move
+			if !turn.lastMove.IsZero() {
+				elapsed = now.Sub(turn.lastMove)
+			}
+			// Opponent has moved? reset his clock
+			if !opp.lastMove.IsZero() {
+				// set clock if unset
+				if opp.clock == nil {
+					opp.clock = time.NewTimer(opp.timeLeft)
+				} else {
+					opp.clock.Reset(opp.timeLeft)
+				}
+			}
+
+			turn.lastMove = now
+			turn.timeLeft -= elapsed
+			turn.clock.Stop()
+
+			players.white = *white
+			players.black = *black
+			h.clients[move.game] = players
+
+			select {
+			case opp.send <- move.move:
+			default:
+				if turn.send != nil {
+					close(turn.send)
+				}
+				if opp.send != nil {
+					close(opp.send)
+				}
+				delete(h.clients, move.game)
+			}
+		case player := <-h.broadcastNoTime:
+			log.Println(player.color, "ran out of time")
+			players, ok := h.clients[player.gameId]
+			if !ok {
+				break
+			}
+			switch player.color {
+			case "white":
+				// White ran out ouf time - inform black player
+				players.black.oppRanOut<- true
+			case "black":
+				// Black ran out ouf time - inform white player
+				players.white.oppRanOut<- true
+			default:
+				log.Println("Invalid color player:", player.color)
 			}
 		}
 	}

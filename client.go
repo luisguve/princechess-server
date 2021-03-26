@@ -48,9 +48,15 @@ type player struct {
 	// Buffered channel of outbound messages.
 	send chan []byte
 
+	// Channel to know when the opponent's clock ran out of time.
+	oppRanOut chan bool
+
 	cleanup func()
 	color string
 	gameId string
+	timeLeft time.Duration
+	clock *time.Timer
+	lastMove time.Time
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -126,13 +132,28 @@ func (p *player) writePump() {
 			if err := p.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+		case <-p.clock.C:
+			// Player ran out ouf time
+			p.hub.broadcastNoTime<- *p
+			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
+
+			payload := websocket.FormatCloseMessage(1000, "OUT_OF_TIME")
+			p.conn.WriteMessage(websocket.CloseMessage, payload)
+			return
+		case <-p.oppRanOut:
+			// Opponent ran out ouf time
+			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
+
+			payload := websocket.FormatCloseMessage(1000, "OPP_OUT_OF_TIME")
+			p.conn.WriteMessage(websocket.CloseMessage, payload)
+			return
 		}
 	}
 }
 
 // serveGame handles websocket requests from the peer.
 func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
-	gameId, color string, cleanup func()) {
+	gameId, color string, minutes int, cleanup func()) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
@@ -144,7 +165,9 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 		cleanup: cleanup,
 		gameId: gameId,
 		color: color,
+		timeLeft: time.Duration(minutes) * time.Minute,
 		send: make(chan []byte),
+		oppRanOut: make(chan bool),
 	}
 	p.hub.register <- p
 

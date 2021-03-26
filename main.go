@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -178,7 +179,16 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 		rout.count--
 		delete(rout.rooms, gameId)
 	}
-	rout.serveGame(w, r, gameId, color, cleanup)
+	if vars["clock"] == "" {
+		http.Error(w, "Unset clock", http.StatusBadRequest)
+		return
+	}
+	clock, err := strconv.Atoi(vars["clock"])
+	if err != nil {
+		http.Error(w, "Invalid clock", http.StatusBadRequest)
+		return
+	}
+	rout.serveGame(w, r, gameId, color, clock, cleanup)
 }
 
 func main() {
@@ -203,7 +213,7 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/play", rout.handlePlay).Methods("GET").Queries("clock", "{clock}")
-	r.HandleFunc("/game", rout.handleGame).Queries("id", "{id}")
+	r.HandleFunc("/game", rout.handleGame).Queries("id", "{id}", "clock", "{clock}")
     c := cors.New(cors.Options{
 		AllowedOrigins: []string{"http://localhost:8080"},
 		AllowCredentials: true,
