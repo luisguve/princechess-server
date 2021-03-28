@@ -81,8 +81,7 @@ func (p *player) readPump() {
 			}
 			break
 		}
-		// message = bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
-		// Unmarshal to get just the color
+		// Unmarshal just to get the color
 		m := move{}
 		if err = json.Unmarshal(message, &m); err != nil {
 			log.Println("Could not unmarshal move:", err)
@@ -166,7 +165,7 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 		gameId: gameId,
 		color: color,
 		timeLeft: time.Duration(minutes) * time.Minute,
-		send: make(chan []byte),
+		send: make(chan []byte, 2),
 		oppRanOut: make(chan bool),
 	}
 	p.hub.register <- p
