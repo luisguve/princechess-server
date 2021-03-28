@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"time"
 )
@@ -153,7 +154,7 @@ func (h *Hub) run() {
 			h.clients[move.game] = players
 
 			// Send my time left along with my move to the opponent.
-			data := make(map[string]string)
+			data := make(map[string]interface{})
 			if err := json.Unmarshal(move.move, &data); err != nil {
 				log.Println("Could not unmarshal move:", err)
 			} else {
@@ -161,7 +162,7 @@ func (h *Hub) run() {
 				if move.move, err = json.Marshal(data); err != nil {
 					log.Println("Could not marshal data:", err)
 				}
-				data = map[string]string{
+				data = map[string]interface{}{
 					"oppClock": opp.timeLeft.Milliseconds(),
 				}
 			}
@@ -179,7 +180,7 @@ func (h *Hub) run() {
 			}
 			// Send me the opponent's time left.
 			var oppTimeLeft []byte
-			err := json.Marshal(data, &oppTimeLeft)
+			oppTimeLeft, err := json.Marshal(data)
 			if err != nil {
 				log.Println("Could not marshal oppTimeLeft:", err)
 			} else {
