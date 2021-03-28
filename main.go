@@ -28,9 +28,9 @@ type router struct {
 	store        *sessions.CookieStore
 	count        int
 	rooms        map[string]room // map game ids to rooms
-	waiting3min  string // ids of users
-	waiting5min  string
-	waiting10min string
+	waiting3min  user // ids of users
+	waiting5min  user
+	waiting10min user
 	opp3min      chan room
 	opp5min      chan room
 	opp10min     chan room
@@ -38,12 +38,13 @@ type router struct {
 
 type room struct {
 	gameId string
-	white  string
-	black  string
+	white  user
+	black  user
 }
 
 type user struct {
-	uid string
+	id       string
+	username string
 }
 
 func (rout *router) makeRoom(r room) {
@@ -53,11 +54,14 @@ func (rout *router) makeRoom(r room) {
 	rout.rooms[r.gameId] = r
 }
 
-func (rout *router) waitingRoom(uid string, opp chan room) (playRoomId string, color string) {
+func (rout *router) waitingRoom(uid, username string, waiting *user, opp chan room) (playRoomId, color, oppUsername string) {
 	deadline := time.NewTimer(5 * time.Second)
 	rout.m.Lock()
-	if rout.waiting3min == "" {
-		rout.waiting3min = uid
+	if waiting.id == "" {
+		*waiting = user{
+			id:       uid,
+			username: username,
+		}
 		rout.m.Unlock()
 		select {
 		case room := <-opp:
@@ -66,30 +70,39 @@ func (rout *router) waitingRoom(uid string, opp chan room) (playRoomId string, c
 				// game cancelled
 				return
 			}
-			room.white = uid
+			room.white = user{
+				id: uid,
+				username: username,
+			}
+
 			rout.makeRoom(room)
 			playRoomId = room.gameId
 			color = "white"
+			oppUsername = room.black.username
 		case <-deadline.C:
 			rout.m.Lock()
 			defer rout.m.Unlock()
-			rout.waiting3min = ""
+			*waiting = user{}
 			return
 		}
 	} else {
-		if rout.waiting3min == uid {
+		if waiting.id == uid {
 			// reset
 			opp<- room{}
-			rout.waiting3min = ""
+			*waiting = user{}
 			rout.m.Unlock()
-			return rout.waitingRoom(uid, opp)
+			return rout.waitingRoom(uid, username, waiting, opp)
 		}
 		playRoomId = ksuid.New().String()
 		opp<- room{
 			gameId: playRoomId,
-			black:  uid,
+			black:  user{
+				id: uid,
+				username: username,
+			},
 		}
-		rout.waiting3min = ""
+		oppUsername = waiting.username
+		*waiting = user{}
 		rout.m.Unlock()
 		color = "black"
 	}
@@ -112,20 +125,24 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	usernameBlob := session.Values["username"]
+	var username string
+	if username, ok = usernameBlob.(string); !ok {
+		username = "mistery"
+	}
 	vars := mux.Vars(r)
 	if vars["clock"] == "" {
 		http.Error(w, "Empty clock time", http.StatusBadRequest)
 		return
 	}
-	color := ""
-	playRoomId := ""
+	var color, playRoomId, opp string
 	switch vars["clock"] {
 	case "3":
-		playRoomId, color = rout.waitingRoom(uid, rout.opp3min)
+		playRoomId, color, opp = rout.waitingRoom(uid, username, &rout.waiting3min, rout.opp3min)
 	case "5":
-		playRoomId, color = rout.waitingRoom(uid, rout.opp5min)
+		playRoomId, color, opp = rout.waitingRoom(uid, username, &rout.waiting5min, rout.opp5min)
 	case "10":
-		playRoomId, color = rout.waitingRoom(uid, rout.opp10min)
+		playRoomId, color, opp = rout.waitingRoom(uid, username, &rout.waiting10min, rout.opp10min)
 	default:
 		http.Error(w, "Invalid clock time: " + vars["clock"], http.StatusBadRequest)
 		return
@@ -134,6 +151,7 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 	res := map[string]string{
 		"color": color,
 		"roomId": playRoomId,
+		"opp": opp,
 	}
 
 	resB, err := json.Marshal(res)
@@ -165,9 +183,9 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	}
 	color := ""
 	switch uid {
-	case room.white:
+	case room.white.id:
 		color = "white"
-	case room.black:
+	case room.black.id:
 		color = "black"
 	default:
 		http.Error(w, "User is neither black nor white", http.StatusBadRequest)
@@ -189,6 +207,26 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rout.serveGame(w, r, gameId, color, clock, cleanup)
+}
+
+func (rout *router) handlePostUsername(w http.ResponseWriter, r *http.Request) {
+	username := r.FormValue("username")
+	if username == "" {
+		return
+	}
+	session, _ := rout.store.Get(r, "sess")
+	session.Values["username"] = username
+	if err := rout.store.Save(r, w, session); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (rout *router) handleGetUsername(w http.ResponseWriter, r *http.Request) {
+	session, _ := rout.store.Get(r, "sess")
+	usernameBlob := session.Values["username"]
+	if username, ok := usernameBlob.(string); ok {
+		w.Write([]byte(username))
+	}
 }
 
 func main() {
@@ -214,6 +252,8 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/play", rout.handlePlay).Methods("GET").Queries("clock", "{clock}")
 	r.HandleFunc("/game", rout.handleGame).Queries("id", "{id}", "clock", "{clock}")
+	r.HandleFunc("/username", rout.handlePostUsername).Methods("POST")
+	r.HandleFunc("/username", rout.handleGetUsername).Methods("GET")
     c := cors.New(cors.Options{
 		AllowedOrigins: []string{"http://localhost:8080"},
 		AllowCredentials: true,
