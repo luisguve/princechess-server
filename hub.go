@@ -152,8 +152,22 @@ func (h *Hub) run() {
 			players.black = *black
 			h.clients[move.game] = players
 
+			// Send my time left along with my move to the opponent.
+			data := make(map[string]string)
+			if err := json.Unmarshal(move.move, &data); err != nil {
+				log.Println("Could not unmarshal move:", err)
+			} else {
+				data["oppClock"] = turn.timeLeft.Milliseconds()
+				if move.move, err = json.Marshal(data); err != nil {
+					log.Println("Could not marshal data:", err)
+				}
+				data = map[string]string{
+					"oppClock": opp.timeLeft.Milliseconds(),
+				}
+			}
+
 			select {
-			case opp.send <- move.move:
+			case opp.send<- move.move:
 			default:
 				if turn.send != nil {
 					close(turn.send)
@@ -162,6 +176,24 @@ func (h *Hub) run() {
 					close(opp.send)
 				}
 				delete(h.clients, move.game)
+			}
+			// Send me the opponent's time left.
+			var oppTimeLeft []byte
+			err := json.Marshal(data, &oppTimeLeft)
+			if err != nil {
+				log.Println("Could not marshal oppTimeLeft:", err)
+			} else {
+				select {
+				case turn.send<- oppTimeLeft:
+				default:
+					if turn.send != nil {
+						close(turn.send)
+					}
+					if opp.send != nil {
+						close(opp.send)
+					}
+					delete(h.clients, move.game)
+				}
 			}
 		case player := <-h.broadcastNoTime:
 			log.Println(player.color, "ran out of time")
