@@ -137,12 +137,7 @@ func (h *Hub) run() {
 			}
 			// Opponent has moved? reset his clock
 			if !opp.lastMove.IsZero() {
-				// set clock if unset
-				if opp.clock == nil {
-					opp.clock = time.NewTimer(opp.timeLeft)
-				} else {
-					opp.clock.Reset(opp.timeLeft)
-				}
+				opp.clock.Reset(opp.timeLeft)
 			}
 
 			turn.lastMove = now

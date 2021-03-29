@@ -132,6 +132,7 @@ func (p *player) writePump() {
 				return
 			}
 		case <-p.clock.C:
+			log.Println("Reached clock")
 			// Player ran out ouf time
 			p.hub.broadcastNoTime<- *p
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -158,6 +159,8 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 		log.Println(err)
 		return
 	}
+	playerClock := time.NewTimer(time.Duration(minutes) * time.Minute)
+	playerClock.Stop()
 	p := player{
 		hub: rout.hub,
 		conn: conn,
@@ -165,6 +168,7 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 		gameId: gameId,
 		color: color,
 		timeLeft: time.Duration(minutes) * time.Minute,
+		clock: playerClock,
 		send: make(chan []byte, 2),
 		oppRanOut: make(chan bool),
 	}
