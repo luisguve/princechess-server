@@ -96,16 +96,10 @@ func (h *Hub) run() {
 					close(players.white.send)
 				}
 				players.white.clock.Stop()
-				//if !players.white.clock.Stop() {
-				//	<-players.white.clock.C
-				//}
 				if players.black.send != nil {
 					close(players.black.send)
 				}
 				players.black.clock.Stop()
-				//if !players.black.clock.Stop() {
-				//	<-players.black.clock.C
-				//}
 				delete(h.clients, p.gameId)
 			}
 		case move := <-h.broadcast:
@@ -132,8 +126,8 @@ func (h *Hub) run() {
 			now := time.Now()
 
 			// Update elapsed time if not the first move
-			if !turn.lastMove.IsZero() {
-				elapsed = now.Sub(turn.lastMove)
+			if !turn.lastMove.IsZero() && !opp.lastMove.IsZero() {
+				elapsed = now.Sub(opp.lastMove)
 			}
 			// Opponent has moved? reset his clock
 			if !opp.lastMove.IsZero() {
