@@ -132,21 +132,56 @@ func (p *player) writePump() {
 				return
 			}
 		case <-p.clock.C:
-			log.Println("Reached clock")
 			// Player ran out ouf time
+			// Inform the opponent about this
 			p.hub.broadcastNoTime<- *p
+
+			data := map[string]string{
+				"OOT": "MY_CLOCK",
+			}
+			dataB, err := json.Marshal(data)
+			if err != nil {
+				log.Println("Could not marshal data:", err)
+				return
+			}
+
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 
-			payload := websocket.FormatCloseMessage(1000, "OUT_OF_TIME")
-			p.conn.WriteMessage(websocket.CloseMessage, payload)
-			return
+			w, err := p.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			w.Write(dataB)
+
+			if err := w.Close(); err != nil {
+				log.Println(err)
+				return
+			}
 		case <-p.oppRanOut:
 			// Opponent ran out ouf time
+			data := map[string]string{
+				"OOT": "OPP_CLOCK",
+			}
+			dataB, err := json.Marshal(data)
+			if err != nil {
+				log.Println("Could not marshal data:", err)
+				return
+			}
+
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 
-			payload := websocket.FormatCloseMessage(1000, "OPP_OUT_OF_TIME")
-			p.conn.WriteMessage(websocket.CloseMessage, payload)
-			return
+			w, err := p.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			w.Write(dataB)
+
+			if err := w.Close(); err != nil {
+				log.Println(err)
+				return
+			}
 		}
 	}
 }
