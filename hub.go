@@ -57,6 +57,7 @@ func newHub() *Hub {
 		broadcast:  make(chan move),
 		register:   make(chan player),
 		unregister: make(chan player),
+		broadcastNoTime: make(chan player),
 		clients:    make(map[string]players), // map game ids to players
 	}
 }
@@ -95,11 +96,15 @@ func (h *Hub) run() {
 				if players.white.send != nil {
 					close(players.white.send)
 				}
-				players.white.clock.Stop()
+				if players.white.clock != nil {
+					players.white.clock.Stop()
+				}
 				if players.black.send != nil {
 					close(players.black.send)
 				}
-				players.black.clock.Stop()
+				if players.black.clock != nil {
+					players.black.clock.Stop()
+				}
 				delete(h.clients, p.gameId)
 			}
 		case move := <-h.broadcast:
@@ -143,16 +148,19 @@ func (h *Hub) run() {
 			h.clients[move.game] = players
 
 			// Send my time left along with my move to the opponent.
+			// Also send him his time left.
 			data := make(map[string]interface{})
 			if err := json.Unmarshal(move.move, &data); err != nil {
 				log.Println("Could not unmarshal move:", err)
 			} else {
 				data["oppClock"] = turn.timeLeft.Milliseconds()
+				data["clock"] = opp.timeLeft.Milliseconds()
 				if move.move, err = json.Marshal(data); err != nil {
 					log.Println("Could not marshal data:", err)
 				}
 				data = map[string]interface{}{
 					"oppClock": opp.timeLeft.Milliseconds(),
+					"clock": turn.timeLeft.Milliseconds(),
 				}
 			}
 
@@ -186,7 +194,6 @@ func (h *Hub) run() {
 				}
 			}
 		case player := <-h.broadcastNoTime:
-			log.Println(player.color, "ran out of time")
 			players, ok := h.clients[player.gameId]
 			if !ok {
 				break
