@@ -28,9 +28,11 @@ type router struct {
 	store        *sessions.CookieStore
 	count        int
 	rooms        map[string]room // map game ids to rooms
-	waiting3min  user // ids of users
+	waiting1min  user // ids of users
+	waiting3min  user
 	waiting5min  user
 	waiting10min user
+	opp1min      chan room
 	opp3min      chan room
 	opp5min      chan room
 	opp10min     chan room
@@ -115,8 +117,10 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Get cookie error: %v", err)
 	}
 	uidBlob := session.Values["uid"]
-	var uid string
-	var ok bool
+	var (
+		uid string
+		ok bool
+	)
 	if uid, ok = uidBlob.(string); !ok {
 		uid = ksuid.New().String()
 		session.Values["uid"] = uid
@@ -135,18 +139,29 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Empty clock time", http.StatusBadRequest)
 		return
 	}
-	var color, playRoomId, opp string
+	var (
+		waiting *user
+		waitOpp chan room
+	)
 	switch vars["clock"] {
+	case "1":
+		waiting = &rout.waiting1min
+		waitOpp = rout.opp1min
 	case "3":
-		playRoomId, color, opp = rout.waitingRoom(uid, username, &rout.waiting3min, rout.opp3min)
+		waiting = &rout.waiting3min
+		waitOpp = rout.opp3min
 	case "5":
-		playRoomId, color, opp = rout.waitingRoom(uid, username, &rout.waiting5min, rout.opp5min)
+		waiting = &rout.waiting5min
+		waitOpp = rout.opp5min
 	case "10":
-		playRoomId, color, opp = rout.waitingRoom(uid, username, &rout.waiting10min, rout.opp10min)
+		waiting = &rout.waiting10min
+		waitOpp = rout.opp10min
 	default:
 		http.Error(w, "Invalid clock time: " + vars["clock"], http.StatusBadRequest)
 		return
 	}
+
+	playRoomId, color, opp := rout.waitingRoom(uid, username, waiting, waitOpp)
 
 	res := map[string]string{
 		"color": color,
@@ -244,6 +259,7 @@ func main() {
 		count:     0,
 		rooms:     make(map[string]room),
 		store:     sessions.NewCookieStore([]byte(key)),
+		opp1min:   make(chan room),
 		opp3min:   make(chan room),
 		opp5min:   make(chan room),
 		opp10min:  make(chan room),
