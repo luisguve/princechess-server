@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -40,15 +41,18 @@ var upgrader = websocket.Upgrader{
 
 // player is a middleman between the websocket connection and the hub.
 type player struct {
-	hub *Hub
+	room *Room
 
 	// The websocket connection.
 	conn *websocket.Conn
 
-	// Buffered channel of outbound messages.
-	send chan []byte
+	// Buffered channel of outbound moves.
+	sendMove chan []byte
 
-	// Channel to know when the opponent's clock ran out of time.
+	// Buffered channel of outbound messages.
+	sendChat chan []byte
+
+	// Channel to know when the opponent's clock reached zero.
 	oppRanOut chan bool
 
 	cleanup func()
@@ -59,14 +63,19 @@ type player struct {
 	lastMove time.Time
 }
 
-// readPump pumps messages from the websocket connection to the hub.
+type move struct {
+	Color   string `json="color"`
+	move    []byte
+}
+
+// readPump pumps messages from the websocket connection to the room's hub.
 //
 // The application runs readPump in a per-connection goroutine. The application
 // ensures that there is at most one reader on a connection by executing all
 // reads from this goroutine.
 func (p *player) readPump() {
 	defer func() {
-		p.hub.unregister <- *p
+		p.room.unregister <-p
 		p.conn.Close()
 		p.cleanup()
 	}()
@@ -74,28 +83,32 @@ func (p *player) readPump() {
 	p.conn.SetReadDeadline(time.Now().Add(pongWait))
 	p.conn.SetPongHandler(func(string) error { p.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 	for {
-		_, message, err := p.conn.ReadMessage()
+		_, msg, err := p.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
 			break
 		}
-		// Unmarshal just to get the color
+		// Unmarshal message just to get the color.
 		m := move{}
-		if err = json.Unmarshal(message, &m); err != nil {
-			log.Println("Could not unmarshal move:", err)
+		if err = json.Unmarshal(msg, &m); err != nil {
+			log.Println("Could not unmarshal msg:", err)
 			break
 		}
-
-		m.game = p.gameId
-		m.move = message
-
-		p.hub.broadcast <- m
+		if m.Color != "" {
+			// It's a move
+			m.move = msg
+			p.room.broadcastMove<- m
+			continue
+		}
+		// It's a chat message
+		msg = bytes.TrimSpace(bytes.Replace(msg, newline, space, -1))
+		p.room.broadcastChat<- msg
 	}
 }
 
-// writePump pumps messages from the hub to the websocket connection.
+// writePump pumps messages from the room's hub to the websocket connection.
 //
 // A goroutine running writePump is started for each connection. The
 // application ensures that there is at most one writer to a connection by
@@ -108,7 +121,7 @@ func (p *player) writePump() {
 	}()
 	for {
 		select {
-		case move, ok := <-p.send:
+		case move, ok := <-p.sendMove:
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				// The hub closed the channel.
@@ -126,15 +139,42 @@ func (p *player) writePump() {
 			if err := w.Close(); err != nil {
 				return
 			}
+		case msg, ok := <-p.sendChat:
+			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// The hub closed the channel.
+				p.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := p.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			w.Write(msg)
+
+			// Add queued chat messages to the current websocket message.
+			n := len(p.sendChat)
+			for i := 0; i < n; i++ {
+				w.Write(newline)
+				w.Write(<-p.sendChat)
+			}
+
+			if err := w.Close(); err != nil {
+				log.Println(err)
+				return
+			}
 		case <-ticker.C:
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := p.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Println(err)
 				return
 			}
 		case <-p.clock.C:
 			// Player ran out ouf time
 			// Inform the opponent about this
-			p.hub.broadcastNoTime<- *p
+			p.room.broadcastNoTime<- p
 
 			data := map[string]string{
 				"OOT": "MY_CLOCK",
@@ -192,22 +232,36 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
+		http.Error(w, "Could not upgrade conn", http.StatusInternalServerError)
 		return
 	}
 	playerClock := time.NewTimer(time.Duration(minutes) * time.Minute)
 	playerClock.Stop()
-	p := player{
-		hub: rout.hub,
-		conn: conn,
-		cleanup: cleanup,
-		gameId: gameId,
-		color: color,
-		timeLeft: time.Duration(minutes) * time.Minute,
-		clock: playerClock,
-		send: make(chan []byte, 2),
+	p := &player{
+		cleanup:   cleanup,
+		clock:     playerClock,
+		color:     color,
+		conn:      conn,
+		gameId:    gameId,
 		oppRanOut: make(chan bool),
+		sendMove:  make(chan []byte, 2),
+		sendChat:  make(chan []byte, 128),
+		timeLeft: time.Duration(minutes) * time.Minute,
 	}
-	p.hub.register <- p
+	switch minutes {
+	case 1:
+		rout.wr.registerPlayer1Min<- p
+	case 3:
+		rout.wr.registerPlayer3Min<- p
+	case 5:
+		rout.wr.registerPlayer5Min<- p
+	case 10:
+		rout.wr.registerPlayer10Min<- p
+	default:
+		log.Println("Invalid clock time:", minutes)
+		http.Error(w, "Invalid clock time", http.StatusBadRequest)
+		return
+	}
 
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines.

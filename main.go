@@ -23,22 +23,22 @@ import (
 var port = flag.String("port", "8000", "http service address")
 
 type router struct {
-	hub          *Hub
+	wr           *waitRoom
 	m            *sync.Mutex
 	store        *sessions.CookieStore
 	count        int
-	rooms        map[string]room // map game ids to rooms
+	matches      map[string]match // map game ids to matches
 	waiting1min  user // ids of users
 	waiting3min  user
 	waiting5min  user
 	waiting10min user
-	opp1min      chan room
-	opp3min      chan room
-	opp5min      chan room
-	opp10min     chan room
+	opp1min      chan match
+	opp3min      chan match
+	opp5min      chan match
+	opp10min     chan match
 }
 
-type room struct {
+type match struct {
 	gameId string
 	white  user
 	black  user
@@ -49,14 +49,14 @@ type user struct {
 	username string
 }
 
-func (rout *router) makeRoom(r room) {
+func (rout *router) makeRoom(m match) {
 	rout.m.Lock()
 	defer rout.m.Unlock()
 	rout.count++
-	rout.rooms[r.gameId] = r
+	rout.matches[m.gameId] = m
 }
 
-func (rout *router) waitingRoom(uid, username string, waiting *user, opp chan room) (playRoomId, color, oppUsername string) {
+func (rout *router) newMatch(uid, username string, waiting *user, opp chan match) (playRoomId, color, oppUsername string) {
 	deadline := time.NewTimer(5 * time.Second)
 	rout.m.Lock()
 	if waiting.id == "" {
@@ -66,21 +66,21 @@ func (rout *router) waitingRoom(uid, username string, waiting *user, opp chan ro
 		}
 		rout.m.Unlock()
 		select {
-		case room := <-opp:
+		case match := <-opp:
 			deadline.Stop()
-			if room.gameId == "" {
+			if match.gameId == "" {
 				// game cancelled
 				return
 			}
-			room.white = user{
+			match.white = user{
 				id: uid,
 				username: username,
 			}
 
-			rout.makeRoom(room)
-			playRoomId = room.gameId
+			rout.makeRoom(match)
+			playRoomId = match.gameId
 			color = "white"
-			oppUsername = room.black.username
+			oppUsername = match.black.username
 		case <-deadline.C:
 			rout.m.Lock()
 			defer rout.m.Unlock()
@@ -90,13 +90,13 @@ func (rout *router) waitingRoom(uid, username string, waiting *user, opp chan ro
 	} else {
 		if waiting.id == uid {
 			// reset
-			opp<- room{}
+			opp<- match{}
 			*waiting = user{}
 			rout.m.Unlock()
-			return rout.waitingRoom(uid, username, waiting, opp)
+			return rout.newMatch(uid, username, waiting, opp)
 		}
 		playRoomId = ksuid.New().String()
-		opp<- room{
+		opp<- match{
 			gameId: playRoomId,
 			black:  user{
 				id: uid,
@@ -141,7 +141,7 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 	}
 	var (
 		waiting *user
-		waitOpp chan room
+		waitOpp chan match
 	)
 	switch vars["clock"] {
 	case "1":
@@ -161,7 +161,7 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	playRoomId, color, opp := rout.waitingRoom(uid, username, waiting, waitOpp)
+	playRoomId, color, opp := rout.newMatch(uid, username, waiting, waitOpp)
 
 	res := map[string]string{
 		"color": color,
@@ -191,16 +191,16 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	}
 	vars := mux.Vars(r)
 	gameId := vars["id"]
-	room, ok := rout.rooms[gameId]
+	match, ok := rout.matches[gameId]
 	if !ok {
-		http.Error(w, "Room not found", http.StatusNotFound)
+		http.Error(w, "Match not found", http.StatusNotFound)
 		return
 	}
 	color := ""
 	switch uid {
-	case room.white.id:
+	case match.white.id:
 		color = "white"
-	case room.black.id:
+	case match.black.id:
 		color = "black"
 	default:
 		http.Error(w, "User is neither black nor white", http.StatusBadRequest)
@@ -210,7 +210,7 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 		rout.m.Lock()
 		defer rout.m.Unlock()
 		rout.count--
-		delete(rout.rooms, gameId)
+		delete(rout.matches, gameId)
 	}
 	if vars["clock"] == "" {
 		http.Error(w, "Unset clock", http.StatusBadRequest)
@@ -246,23 +246,23 @@ func (rout *router) handleGetUsername(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	flag.Parse()
-	hub := newHub()
-	go hub.run()
+	wr := newWaitRoom()
+	go wr.listenAll()
 	env, err := godotenv.Read("cookie_hash.env")
 	if err != nil {
 		log.Fatal(err)
 	}
 	key := env["SESSION_KEY"]
 	rout := &router{
-		hub:       hub,
+		wr:        wr,
 		m:         &sync.Mutex{},
 		count:     0,
-		rooms:     make(map[string]room),
+		matches:   make(map[string]match),
 		store:     sessions.NewCookieStore([]byte(key)),
-		opp1min:   make(chan room),
-		opp3min:   make(chan room),
-		opp5min:   make(chan room),
-		opp10min:  make(chan room),
+		opp1min:   make(chan match),
+		opp3min:   make(chan match),
+		opp5min:   make(chan match),
+		opp10min:  make(chan match),
 	}
 
 	r := mux.NewRouter()
