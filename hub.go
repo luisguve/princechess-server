@@ -65,16 +65,19 @@ func (*waitRoom) listen(register chan *player, finishGame chan string, rooms map
 			// Set up room if both players have joined
 			if (pp.white != nil) && (pp.black != nil) {
 				r := &Room{
-					white:               pp.white,
-					black:               pp.black,
-					unregister:          make(chan *player),
-					broadcastMove:       make(chan move),
-					broadcastChat:       make(chan message),
-					broadcastNoTime:     make(chan string),
-					broadcastDrawOffer:  make(chan string),
-					broadcastAcceptDraw: make(chan string),
-					broadcastResign:     make(chan string),
-					stopClocks:          make(chan bool),
+					white:                  pp.white,
+					black:                  pp.black,
+					duration:               p.timeLeft,
+					unregister:             make(chan *player),
+					broadcastMove:          make(chan move),
+					broadcastChat:          make(chan message),
+					broadcastNoTime:        make(chan string),
+					broadcastDrawOffer:     make(chan string),
+					broadcastAcceptDraw:    make(chan string),
+					broadcastResign:        make(chan string),
+					broadcastRematchOffer:  make(chan string),
+					broadcastAcceptRematch: make(chan string),
+					stopClocks:             make(chan bool),
 					cleanup: func() {
 						finishGame<- p.gameId
 					},

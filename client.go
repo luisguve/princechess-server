@@ -56,9 +56,11 @@ type player struct {
 	oppRanOut chan bool
 
 	// Action channels
-	drawOffer       chan bool
-	oppAcceptedDraw chan bool
-	oppResigned     chan bool
+	drawOffer          chan bool
+	oppAcceptedDraw    chan bool
+	oppResigned        chan bool
+	rematchOffer       chan bool
+	oppAcceptedRematch chan bool
 
 	cleanup  func()
 	color    string
@@ -77,14 +79,16 @@ type move struct {
 
 // Chat message
 type message struct {
-	Move       move   `json:"move,omitempty"`
-	Text       string `json:"chat"`
-	Username   string `json:"from"`
-	Resign     bool   `json:"resign"`
-	DrawOffer  bool   `json:"drawOffer"`
-	AcceptDraw bool   `json:"acceptDraw"`
-	GameOver   bool   `json:"gameOver"`
-	userId     string
+	Move          move   `json:"move,omitempty"`
+	Text          string `json:"chat"`
+	Username      string `json:"from"`
+	Resign        bool   `json:"resign"`
+	DrawOffer     bool   `json:"drawOffer"`
+	AcceptDraw    bool   `json:"acceptDraw"`
+	GameOver      bool   `json:"gameOver"`
+	RematchOffer  bool   `json:"rematchOffer"`
+	AcceptRematch bool   `json:"acceptRematch"`
+	userId        string
 }
 
 // readPump pumps messages from the websocket connection to the room's hub.
@@ -136,6 +140,10 @@ func (p *player) readPump() {
 			p.room.broadcastAcceptDraw<- p.color
 		case m.GameOver:
 			p.room.stopClocks<- true
+		case m.RematchOffer:
+			p.room.broadcastRematchOffer<- p.color
+		case m.AcceptRematch:
+			p.room.broadcastAcceptRematch<- p.color
 		default:
 			log.Println("Unexpected message", m)
 		}
@@ -267,6 +275,22 @@ func (p *player) writePump() {
 				log.Println(err)
 				return
 			}
+		case <-p.rematchOffer: // Opponent offered rematch
+			data := map[string]string{
+				"rematchOffer": "true",
+			}
+			if err := sendTextMsg(data, p.conn); err != nil {
+				log.Println(err)
+				return
+			}
+		case <-p.oppAcceptedRematch: // opponent accepted rematch
+			data := map[string]string{
+				"oppAcceptedRematch": "true",
+			}
+			if err := sendTextMsg(data, p.conn); err != nil {
+				log.Println(err)
+				return
+			}
 		}
 	}
 }
@@ -301,20 +325,22 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 	playerClock := time.NewTimer(time.Duration(minutes) * time.Minute)
 	playerClock.Stop()
 	p := &player{
-		cleanup:         cleanup,
-		clock:           playerClock,
-		color:           color,
-		conn:            conn,
-		gameId:          gameId,
-		oppRanOut:       make(chan bool),
-		drawOffer:       make(chan bool),
-		oppAcceptedDraw: make(chan bool),
-		oppResigned:     make(chan bool),
-		sendMove:        make(chan []byte, 2), // one for the clock, one for the move
-		sendChat:        make(chan message, 128),
-		timeLeft:        time.Duration(minutes) * time.Minute,
-		userId:          userId,
-		username:        username,
+		cleanup:            cleanup,
+		clock:              playerClock,
+		color:              color,
+		conn:               conn,
+		gameId:             gameId,
+		oppRanOut:          make(chan bool),
+		drawOffer:          make(chan bool),
+		oppAcceptedDraw:    make(chan bool),
+		oppResigned:        make(chan bool),
+		rematchOffer:       make(chan bool),
+		oppAcceptedRematch: make(chan bool),
+		sendMove:           make(chan []byte, 2), // one for the clock, one for the move
+		sendChat:           make(chan message, 128),
+		timeLeft:           time.Duration(minutes) * time.Minute,
+		userId:             userId,
+		username:           username,
 	}
 	switch minutes {
 	case 1:

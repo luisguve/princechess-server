@@ -12,6 +12,9 @@ type Room struct {
 	white *player
 	black *player
 
+	// Duration of the game in minutes
+	duration time.Duration
+
 	// Unregister players.
 	unregister chan *player
 
@@ -37,8 +40,23 @@ type Room struct {
 	// stalemate or drawn position.
 	stopClocks chan bool
 
+	// Inbound player color offering rematch
+	broadcastRematchOffer chan string
+
+	// Inbound player color accepting rematch
+	broadcastAcceptRematch chan string
+
 	// Cleanup routine after the game ends
 	cleanup func()
+}
+
+func (r Room) stopTimers() {
+	if r.white.clock != nil {
+		r.white.clock.Stop()
+	}
+	if r.black.clock != nil {
+		r.black.clock.Stop()
+	}
 }
 
 func (r Room) hostGame() {
@@ -47,15 +65,10 @@ func (r Room) hostGame() {
 		if r.white.sendMove != nil {
 			close(r.white.sendMove)
 		}
-		if r.white.clock != nil {
-			r.white.clock.Stop()
-		}
 		if r.black.sendMove != nil {
 			close(r.black.sendMove)
 		}
-		if r.black.clock != nil {
-			r.black.clock.Stop()
-		}
+		r.stopTimers()
 	}()
 	for {
 		ChannelSelector:
@@ -179,12 +192,7 @@ func (r Room) hostGame() {
 				log.Println("Invalid color player:", playerColor)
 				return
 			}
-			if r.white.clock != nil {
-				r.white.clock.Stop()
-			}
-			if r.black.clock != nil {
-				r.black.clock.Stop()
-			}
+			r.stopTimers()
 		case playerColor := <-r.broadcastResign:
 			// Who is resigning?
 			switch playerColor {
@@ -198,19 +206,48 @@ func (r Room) hostGame() {
 				log.Println("Invalid color player:", playerColor)
 				return
 			}
-			if r.white.clock != nil {
-				r.white.clock.Stop()
-			}
-			if r.black.clock != nil {
-				r.black.clock.Stop()
-			}
+			r.stopTimers()
 		case <-r.stopClocks:
-			if r.white.clock != nil {
-				r.white.clock.Stop()
+			r.stopTimers()
+		case playerColor := <-r.broadcastRematchOffer:
+			// Who is offering rematch?
+			switch playerColor {
+			case "white":
+				// Send rematch offer to black player
+				r.black.rematchOffer<- true
+			case "black":
+				// Send rematch offer to white player
+				r.white.rematchOffer<- true
+			default:
+				log.Println("Invalid color player:", playerColor)
+				return
 			}
-			if r.black.clock != nil {
-				r.black.clock.Stop()
+		case playerColor := <-r.broadcastAcceptRematch:
+			// Who is accepting the rematch?
+			switch playerColor {
+			case "white":
+				// Send rematch response to black player
+				r.black.oppAcceptedRematch<- true
+			case "black":
+				// Send rematch response to white player
+				r.white.oppAcceptedRematch<- true
+			default:
+				log.Println("Invalid color player:", playerColor)
+				return
 			}
+			// Switch colors and reset clocks
+			r.white, r.black = switchColors(r.white, r.black)
+			r.white.timeLeft = r.duration
+			r.white.lastMove = time.Time{}
+			r.black.timeLeft = r.duration
+			r.black.lastMove = time.Time{}
 		}
 	}
+}
+
+
+func switchColors(white, black *player) (*player, *player) {
+	white.color = "black"
+	black.color = "white"
+	return black, white
 }
