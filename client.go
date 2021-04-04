@@ -5,10 +5,10 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -29,8 +29,8 @@ const (
 )
 
 var (
-	newline = []byte{'\n'}
-	space   = []byte{' '}
+	newline = "\n"
+	space   = " "
 )
 
 var upgrader = websocket.Upgrader{
@@ -50,22 +50,32 @@ type player struct {
 	sendMove chan []byte
 
 	// Buffered channel of outbound messages.
-	sendChat chan []byte
+	sendChat chan message
 
 	// Channel to know when the opponent's clock reached zero.
 	oppRanOut chan bool
 
-	cleanup func()
-	color string
-	gameId string
+	cleanup  func()
+	color    string
+	gameId   string
 	timeLeft time.Duration
-	clock *time.Timer
+	clock    *time.Timer
 	lastMove time.Time
+	username string
+	userId   string
 }
 
 type move struct {
-	Color   string `json="color"`
-	move    []byte
+	Color string `json:"color"`
+	move  []byte
+}
+
+// Chat message
+type message struct {
+	Move     move   `json:"move,omitempty"`
+	Text     string `json:"chat"`
+	Username string `json:"from"`
+	userId   string
 }
 
 // readPump pumps messages from the websocket connection to the room's hub.
@@ -91,20 +101,24 @@ func (p *player) readPump() {
 			break
 		}
 		// Unmarshal message just to get the color.
-		m := move{}
+		m := message{}
 		if err = json.Unmarshal(msg, &m); err != nil {
 			log.Println("Could not unmarshal msg:", err)
 			break
 		}
-		if m.Color != "" {
+		if m.Move.Color != "" {
 			// It's a move
-			m.move = msg
-			p.room.broadcastMove<- m
+			m.Move.move = msg
+			p.room.broadcastMove<- m.Move
 			continue
 		}
 		// It's a chat message
-		msg = bytes.TrimSpace(bytes.Replace(msg, newline, space, -1))
-		p.room.broadcastChat<- msg
+		text := strings.TrimSpace(strings.Replace(m.Text, newline, space, -1))
+		p.room.broadcastChat<- message{
+			Text:     text,
+			Username: p.username,
+			userId:   p.userId,
+		}
 	}
 }
 
@@ -147,18 +161,37 @@ func (p *player) writePump() {
 				return
 			}
 
+			if (msg.userId == p.userId) && (msg.Username == DEFAULT_USERNAME) {
+				msg.Username = "you"
+			}
+
+			msgB, err := json.Marshal(msg)
+			if err != nil {
+				log.Println("Could not marshal data:", err)
+				break
+			}
+
 			w, err := p.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				log.Println(err)
 				return
 			}
-			w.Write(msg)
+			w.Write(msgB)
 
 			// Add queued chat messages to the current websocket message.
 			n := len(p.sendChat)
 			for i := 0; i < n; i++ {
-				w.Write(newline)
-				w.Write(<-p.sendChat)
+				msg = <-p.sendChat
+				if (msg.userId == p.userId) && (msg.Username == DEFAULT_USERNAME) {
+					msg.Username = "you"
+				}
+				msgB, err := json.Marshal(msg)
+				if err != nil {
+					log.Println("Could not marshal data:", err)
+					break
+				}
+				w.Write([]byte(newline))
+				w.Write(msgB)
 			}
 
 			if err := w.Close(); err != nil {
@@ -228,7 +261,7 @@ func (p *player) writePump() {
 
 // serveGame handles websocket requests from the peer.
 func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
-	gameId, color string, minutes int, cleanup func()) {
+	gameId, color string, minutes int, cleanup func(), username, userId string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
@@ -245,8 +278,10 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 		gameId:    gameId,
 		oppRanOut: make(chan bool),
 		sendMove:  make(chan []byte, 2),
-		sendChat:  make(chan []byte, 128),
-		timeLeft: time.Duration(minutes) * time.Minute,
+		sendChat:  make(chan message, 128),
+		timeLeft:  time.Duration(minutes) * time.Minute,
+		userId:    userId,
+		username:  username,
 	}
 	switch minutes {
 	case 1:

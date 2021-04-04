@@ -63,13 +63,13 @@ func (*waitRoom) listen(register chan *player, finishGame chan string, rooms map
 				break MatchSelector
 			}
 			// Set up room if both players have joined
-			if (pp.white.conn != nil) && (pp.black.conn != nil) {
+			if (pp.white != nil) && (pp.black != nil) {
 				r := &Room{
 					white:           pp.white,
 					black:           pp.black,
 					unregister:      make(chan *player),
 					broadcastMove:   make(chan move),
-					broadcastChat:   make(chan []byte),
+					broadcastChat:   make(chan message),
 					broadcastNoTime: make(chan *player),
 					cleanup: func() {
 						finishGame<- p.gameId
@@ -81,14 +81,15 @@ func (*waitRoom) listen(register chan *player, finishGame chan string, rooms map
 			}
 			rooms[p.gameId] = pp
 		case gameId := <-finishGame:
+			log.Println("Deleting room", gameId)
 			delete(rooms, gameId)
 		}
 	}
 }
 
 func (wr *waitRoom) listenAll() {
-	go wr.listen(wr.registerPlayer1Min, wr.finish1MinGame, wr.rooms1Min)   // 1 minute games
-	go wr.listen(wr.registerPlayer3Min, wr.finish3MinGame, wr.rooms3Min)   // 3 minute games
-	go wr.listen(wr.registerPlayer5Min, wr.finish5MinGame, wr.rooms5Min)   // 5 minute games
+	go wr.listen(wr.registerPlayer1Min, wr.finish1MinGame, wr.rooms1Min)    // 1 minute games
+	go wr.listen(wr.registerPlayer3Min, wr.finish3MinGame, wr.rooms3Min)    // 3 minute games
+	go wr.listen(wr.registerPlayer5Min, wr.finish5MinGame, wr.rooms5Min)    // 5 minute games
 	go wr.listen(wr.registerPlayer10Min, wr.finish10MinGame, wr.rooms10Min) // 10 minute games
 }

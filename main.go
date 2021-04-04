@@ -20,6 +20,8 @@ import (
 	"github.com/segmentio/ksuid"
 )
 
+const DEFAULT_USERNAME = "mistery"
+
 var port = flag.String("port", "8000", "http service address")
 
 type router struct {
@@ -132,7 +134,7 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 	usernameBlob := session.Values["username"]
 	var username string
 	if username, ok = usernameBlob.(string); !ok {
-		username = "mistery"
+		username = DEFAULT_USERNAME
 	}
 	vars := mux.Vars(r)
 	if vars["clock"] == "" {
@@ -221,7 +223,12 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid clock", http.StatusBadRequest)
 		return
 	}
-	rout.serveGame(w, r, gameId, color, clock, cleanup)
+	usernameBlob := session.Values["username"]
+	username, ok := usernameBlob.(string)
+	if !ok {
+		username = DEFAULT_USERNAME
+	}
+	rout.serveGame(w, r, gameId, color, clock, cleanup, username, uid)
 }
 
 func (rout *router) handlePostUsername(w http.ResponseWriter, r *http.Request) {

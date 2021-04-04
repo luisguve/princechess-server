@@ -19,7 +19,7 @@ type Room struct {
 	broadcastMove chan move
 
 	// Inbound chat messages from the players.
-	broadcastChat chan []byte
+	broadcastChat chan message
 
 	// Channel to listen to when one of the players' clocks reached zero.
 	broadcastNoTime chan *player
@@ -50,22 +50,14 @@ func (r Room) hostGame() {
 		case <-r.unregister:
 			return
 		case msg := <-r.broadcastChat:
-			data := map[string]interface{}{
-				"chat": msg,
-			}
-			dataB, err := json.Marshal(data)
-			if err != nil {
-				log.Println("Could not marshal data:", err)
-				break
-			}
 			select {
-			case r.white.sendChat<- dataB:
+			case r.white.sendChat<- msg:
 			default:
 				log.Println("Returning: white's chat channel buffer is full")
 				return
 			}
 			select {
-			case r.black.sendChat<- dataB:
+			case r.black.sendChat<- msg:
 			default:
 				log.Println("Returning: black's chat channel buffer is full")
 				return
