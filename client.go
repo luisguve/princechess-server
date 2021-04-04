@@ -55,6 +55,11 @@ type player struct {
 	// Channel to know when the opponent's clock reached zero.
 	oppRanOut chan bool
 
+	// Action channels
+	drawOffer       chan bool
+	oppAcceptedDraw chan bool
+	oppResigned     chan bool
+
 	cleanup  func()
 	color    string
 	gameId   string
@@ -72,10 +77,14 @@ type move struct {
 
 // Chat message
 type message struct {
-	Move     move   `json:"move,omitempty"`
-	Text     string `json:"chat"`
-	Username string `json:"from"`
-	userId   string
+	Move       move   `json:"move,omitempty"`
+	Text       string `json:"chat"`
+	Username   string `json:"from"`
+	Resign     bool   `json:"resign"`
+	DrawOffer  bool   `json:"drawOffer"`
+	AcceptDraw bool   `json:"acceptDraw"`
+	GameOver   bool   `json:"gameOver"`
+	userId     string
 }
 
 // readPump pumps messages from the websocket connection to the room's hub.
@@ -106,18 +115,29 @@ func (p *player) readPump() {
 			log.Println("Could not unmarshal msg:", err)
 			break
 		}
-		if m.Move.Color != "" {
+		switch {
+		case m.Move.Color != "":
 			// It's a move
 			m.Move.move = msg
 			p.room.broadcastMove<- m.Move
-			continue
-		}
-		// It's a chat message
-		text := strings.TrimSpace(strings.Replace(m.Text, newline, space, -1))
-		p.room.broadcastChat<- message{
-			Text:     text,
-			Username: p.username,
-			userId:   p.userId,
+		case m.Text != "":
+			// It's a chat message
+			text := strings.TrimSpace(strings.Replace(m.Text, newline, space, -1))
+			p.room.broadcastChat<- message{
+				Text:     text,
+				Username: p.username,
+				userId:   p.userId,
+			}
+		case m.Resign:
+			p.room.broadcastResign<- p.color
+		case m.DrawOffer:
+			p.room.broadcastDrawOffer<- p.color
+		case m.AcceptDraw:
+			p.room.broadcastAcceptDraw<- p.color
+		case m.GameOver:
+			p.room.stopClocks<- true
+		default:
+			log.Println("Unexpected message", m)
 		}
 	}
 }
@@ -135,7 +155,7 @@ func (p *player) writePump() {
 	}()
 	for {
 		select {
-		case move, ok := <-p.sendMove:
+		case move, ok := <-p.sendMove: // Opponent moved a piece
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				// The hub closed the channel.
@@ -153,7 +173,7 @@ func (p *player) writePump() {
 			if err := w.Close(); err != nil {
 				return
 			}
-		case msg, ok := <-p.sendChat:
+		case msg, ok := <-p.sendChat: // Chat msg
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
 				// The hub closed the channel.
@@ -198,65 +218,75 @@ func (p *player) writePump() {
 				log.Println(err)
 				return
 			}
-		case <-ticker.C:
+		case <-ticker.C: // ping
 			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := p.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				log.Println(err)
 				return
 			}
-		case <-p.clock.C:
-			// Player ran out ouf time
+		case <-p.clock.C: // Player ran out ouf time
 			// Inform the opponent about this
-			p.room.broadcastNoTime<- p
+			p.room.broadcastNoTime<- p.color
 
 			data := map[string]string{
 				"OOT": "MY_CLOCK",
 			}
-			dataB, err := json.Marshal(data)
-			if err != nil {
-				log.Println("Could not marshal data:", err)
-				return
-			}
-
-			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
-
-			w, err := p.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
+			if err := sendTextMsg(data, p.conn); err != nil {
 				log.Println(err)
 				return
 			}
-			w.Write(dataB)
-
-			if err := w.Close(); err != nil {
-				log.Println(err)
-				return
-			}
-		case <-p.oppRanOut:
-			// Opponent ran out ouf time
+		case <-p.oppRanOut: // Opponent ran out ouf time
 			data := map[string]string{
 				"OOT": "OPP_CLOCK",
 			}
-			dataB, err := json.Marshal(data)
-			if err != nil {
-				log.Println("Could not marshal data:", err)
-				return
-			}
-
-			p.conn.SetWriteDeadline(time.Now().Add(writeWait))
-
-			w, err := p.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
+			if err := sendTextMsg(data, p.conn); err != nil {
 				log.Println(err)
 				return
 			}
-			w.Write(dataB)
-
-			if err := w.Close(); err != nil {
+		case <-p.drawOffer: // Opponent offered draw
+			data := map[string]string{
+				"drawOffer": "true",
+			}
+			if err := sendTextMsg(data, p.conn); err != nil {
+				log.Println(err)
+				return
+			}
+		case <-p.oppAcceptedDraw: // opponent accepted draw
+			data := map[string]string{
+				"oppAcceptedDraw": "true",
+			}
+			if err := sendTextMsg(data, p.conn); err != nil {
+				log.Println(err)
+				return
+			}
+		case <-p.oppResigned: // opponent resigned
+			data := map[string]string{
+				"oppResigned": "true",
+			}
+			if err := sendTextMsg(data, p.conn); err != nil {
 				log.Println(err)
 				return
 			}
 		}
 	}
+}
+
+// JSON-marshal and send message to the connection.
+func sendTextMsg(data map[string]string, conn *websocket.Conn) error {
+	dataB, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(writeWait))
+
+	w, err := conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		return err
+	}
+	w.Write(dataB)
+
+	return w.Close()
 }
 
 // serveGame handles websocket requests from the peer.
@@ -271,17 +301,20 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 	playerClock := time.NewTimer(time.Duration(minutes) * time.Minute)
 	playerClock.Stop()
 	p := &player{
-		cleanup:   cleanup,
-		clock:     playerClock,
-		color:     color,
-		conn:      conn,
-		gameId:    gameId,
-		oppRanOut: make(chan bool),
-		sendMove:  make(chan []byte, 2),
-		sendChat:  make(chan message, 128),
-		timeLeft:  time.Duration(minutes) * time.Minute,
-		userId:    userId,
-		username:  username,
+		cleanup:         cleanup,
+		clock:           playerClock,
+		color:           color,
+		conn:            conn,
+		gameId:          gameId,
+		oppRanOut:       make(chan bool),
+		drawOffer:       make(chan bool),
+		oppAcceptedDraw: make(chan bool),
+		oppResigned:     make(chan bool),
+		sendMove:        make(chan []byte, 2), // one for the clock, one for the move
+		sendChat:        make(chan message, 128),
+		timeLeft:        time.Duration(minutes) * time.Minute,
+		userId:          userId,
+		username:        username,
 	}
 	switch minutes {
 	case 1:

@@ -22,7 +22,20 @@ type Room struct {
 	broadcastChat chan message
 
 	// Channel to listen to when one of the players' clocks reached zero.
-	broadcastNoTime chan *player
+	broadcastNoTime chan string
+
+	// Inbound player color offering draw
+	broadcastDrawOffer chan string
+
+	// Inbound player color accepting draw
+	broadcastAcceptDraw chan string
+
+	// Inbound player color resigning
+	broadcastResign chan string
+
+	// Channel to listen to when the game is over by checkmate, prince promoted,
+	// stalemate or drawn position.
+	stopClocks chan bool
 
 	// Cleanup routine after the game ends
 	cleanup func()
@@ -127,9 +140,9 @@ func (r Room) hostGame() {
 			case turn.sendMove<- oppTimeLeft:
 			default: return
 			}
-		case player := <-r.broadcastNoTime:
+		case playerColor := <-r.broadcastNoTime:
 			// Who ran out of time?
-			switch player.color {
+			switch playerColor {
 			case "white":
 				// White ran out ouf time - inform black player
 				r.black.oppRanOut<- true
@@ -137,8 +150,66 @@ func (r Room) hostGame() {
 				// Black ran out ouf time - inform white player
 				r.white.oppRanOut<- true
 			default:
-				log.Println("Invalid color player:", player.color)
+				log.Println("Invalid color player:", playerColor)
 				return
+			}
+		case playerColor := <-r.broadcastDrawOffer:
+			// Who is offering draw?
+			switch playerColor {
+			case "white":
+				// Send draw offer to black player.
+				r.black.drawOffer<- true
+			case "black":
+				// Send draw offer to white player.
+				r.white.drawOffer<- true
+			default:
+				log.Println("Invalid color player:", playerColor)
+				return
+			}
+		case playerColor := <-r.broadcastAcceptDraw:
+			// Who is accepting draw?
+			switch playerColor {
+			case "white":
+				// Send draw accept signal to black player.
+				r.black.oppAcceptedDraw<- true
+			case "black":
+				// Send draw accept signal to white player.
+				r.white.oppAcceptedDraw<- true
+			default:
+				log.Println("Invalid color player:", playerColor)
+				return
+			}
+			if r.white.clock != nil {
+				r.white.clock.Stop()
+			}
+			if r.black.clock != nil {
+				r.black.clock.Stop()
+			}
+		case playerColor := <-r.broadcastResign:
+			// Who is resigning?
+			switch playerColor {
+			case "white":
+				// White resigned - inform black player
+				r.black.oppResigned<- true
+			case "black":
+				// Black resigned - inform white player
+				r.white.oppResigned<- true
+			default:
+				log.Println("Invalid color player:", playerColor)
+				return
+			}
+			if r.white.clock != nil {
+				r.white.clock.Stop()
+			}
+			if r.black.clock != nil {
+				r.black.clock.Stop()
+			}
+		case <-r.stopClocks:
+			if r.white.clock != nil {
+				r.white.clock.Stop()
+			}
+			if r.black.clock != nil {
+				r.black.clock.Stop()
 			}
 		}
 	}
