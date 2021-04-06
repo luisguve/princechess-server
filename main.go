@@ -341,6 +341,14 @@ func (rout *router) handleInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
+	// Upgrade connection to websocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "Could not upgrade conn", http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
 	session, _ := rout.store.Get(r, "sess")
 	uidBlob := session.Values["uid"]
 	var (
@@ -351,7 +359,8 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 		uid = ksuid.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			payload := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
+			conn.WriteMessage(websocket.CloseMessage, payload)
 			return
 		}
 	}
@@ -364,7 +373,8 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 	inviteId := vars["id"]
 	clock := vars["clock"]
 	if clock == "" {
-		http.Error(w, "Unset clock", http.StatusBadRequest)
+		payload := websocket.FormatCloseMessage(websocket.CloseInvalidFramePayloadData, "Unset clock")
+		conn.WriteMessage(websocket.CloseMessage, payload)
 		return
 	}
 	var rooms map[string]*inviteRoom
@@ -378,19 +388,14 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 	case "10":
 		rooms = rout.wr.rooms10min
 	default:
-		http.Error(w, "Invalid clock: " + clock, http.StatusBadRequest)
+		payload := websocket.FormatCloseMessage(websocket.CloseInvalidFramePayloadData, "Invalid clock")
+		conn.WriteMessage(websocket.CloseMessage, payload)
 		return
 	}
 	room, ok := rooms[inviteId]
 	if !ok {
-		http.Error(w, "Room not found", http.StatusNotFound)
-		return
-	}
-	// Upgrade connection to websocket
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println(err)
-		http.Error(w, "Could not upgrade conn", http.StatusInternalServerError)
+		payload := websocket.FormatCloseMessage(websocket.CloseInvalidFramePayloadData, "Room not found")
+		conn.WriteMessage(websocket.CloseMessage, payload)
 		return
 	}
 	// Prepare the private channel
@@ -402,10 +407,11 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(maxMessageSize)
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	cancel := make(chan bool)
 	// reading goroutine
 	go func() {
 		defer func() {
-			conn.Close()
+			cancel<- true
 		}()
 		for {
 			_, _, err := conn.ReadMessage()
@@ -417,8 +423,8 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	// Wait opponent for up to 5 minutes
-	deadline := time.NewTimer(60 * 5 * time.Second)
+	// Wait opponent for up to 1 minute
+	deadline := time.NewTimer(60 * time.Second)
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		// delete waitRoom
@@ -426,13 +432,13 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 		delete(rooms, inviteId)
 		rout.m.Unlock()
 		ticker.Stop()
-		conn.Close()
 	}()
 	select {
 	case match := <-room.opp:
 		deadline.Stop()
 		if match.gameId == "" {
-			// game cancelled
+			payload := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "You can't play against yourself")
+			conn.WriteMessage(websocket.CloseMessage, payload)
 			return
 		}
 		var color, opp string
@@ -462,43 +468,17 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 		resB, err := json.Marshal(res)
 		if err != nil {
 			log.Println("Could not marshal response:", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			payload := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
+			conn.WriteMessage(websocket.CloseMessage, payload)
 			return
 		}
 
-		w, err := conn.NextWriter(websocket.TextMessage)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		w.Write(resB)
-
-		if err := w.Close(); err != nil {
-			log.Println(err)
-		}
+		payload := websocket.FormatCloseMessage(websocket.CloseNormalClosure, string(resB))
+		conn.WriteMessage(websocket.CloseMessage, payload)
 	case <-deadline.C:
-		res := map[string]string{
-			"OOT": "true",
-		}
-
-		resB, err := json.Marshal(res)
-		if err != nil {
-			log.Println("Could not marshal response:", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w, err := conn.NextWriter(websocket.TextMessage)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		w.Write(resB)
-
-		if err := w.Close(); err != nil {
-			log.Println(err)
-		}
-		return
+		payload := websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "Time is out - Link expired")
+		conn.WriteMessage(websocket.CloseMessage, payload)
+	case <-cancel:
 	}
 }
 
@@ -630,7 +610,7 @@ func main() {
 	r.HandleFunc("/play", rout.handlePlay).Methods("GET").Queries("clock", "{clock}")
 	r.HandleFunc("/invite", rout.handleInvite).Methods("GET").Queries("clock", "{clock}")
 	r.HandleFunc("/game", rout.handleGame).Queries("id", "{id}", "clock", "{clock}")
-	r.HandleFunc("/wait", rout.handleWait).Queries("id", "{id}")
+	r.HandleFunc("/wait", rout.handleWait).Queries("id", "{id}", "clock", "{clock}")
 	r.HandleFunc("/join", rout.handleInvite).Queries("id", "{id}")
 	r.HandleFunc("/username", rout.handlePostUsername).Methods("POST")
 	r.HandleFunc("/username", rout.handleGetUsername).Methods("GET")
