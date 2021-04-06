@@ -13,8 +13,8 @@ type players struct {
 	black *player
 }
 
-// waitRoom listens for players and matches them according to the minutes specified.
-type waitRoom struct {
+// roomMatcher listens for players and matches them according to the minutes specified.
+type roomMatcher struct {
 	// Rooms mapped to players.
 	rooms1Min  map[string]players
 	rooms3Min  map[string]players
@@ -34,8 +34,8 @@ type waitRoom struct {
 	finish10MinGame chan string
 }
 
-func newWaitRoom() *waitRoom {
-	return &waitRoom{
+func newRoomMatcher() *roomMatcher {
+	return &roomMatcher{
 		rooms1Min:           make(map[string]players),
 		rooms3Min:           make(map[string]players),
 		rooms5Min:           make(map[string]players),
@@ -47,7 +47,7 @@ func newWaitRoom() *waitRoom {
 	}
 }
 
-func (*waitRoom) listen(register chan *player, finishGame chan string, rooms map[string]players) {
+func (*roomMatcher) listen(register chan *player, finishGame chan string, rooms map[string]players) {
 	for {
 		MatchSelector:
 		select {
@@ -94,7 +94,7 @@ func (*waitRoom) listen(register chan *player, finishGame chan string, rooms map
 	}
 }
 
-func (wr *waitRoom) listenAll() {
+func (wr *roomMatcher) listenAll() {
 	go wr.listen(wr.registerPlayer1Min, wr.finish1MinGame, wr.rooms1Min)    // 1 minute games
 	go wr.listen(wr.registerPlayer3Min, wr.finish3MinGame, wr.rooms3Min)    // 3 minute games
 	go wr.listen(wr.registerPlayer5Min, wr.finish5MinGame, wr.rooms5Min)    // 5 minute games
