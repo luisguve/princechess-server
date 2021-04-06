@@ -344,13 +344,13 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 	}
 	switch minutes {
 	case 1:
-		rout.wr.registerPlayer1Min<- p
+		rout.rm.registerPlayer1Min<- p
 	case 3:
-		rout.wr.registerPlayer3Min<- p
+		rout.rm.registerPlayer3Min<- p
 	case 5:
-		rout.wr.registerPlayer5Min<- p
+		rout.rm.registerPlayer5Min<- p
 	case 10:
-		rout.wr.registerPlayer10Min<- p
+		rout.rm.registerPlayer10Min<- p
 	default:
 		log.Println("Invalid clock time:", minutes)
 		http.Error(w, "Invalid clock time", http.StatusBadRequest)
