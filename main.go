@@ -9,12 +9,14 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"math/rand"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/sessions"
+	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
     "github.com/rs/cors"
 	"github.com/segmentio/ksuid"
@@ -25,7 +27,8 @@ const DEFAULT_USERNAME = "mistery"
 var port = flag.String("port", "8000", "http service address")
 
 type router struct {
-	wr           *waitRoom
+	rm           *roomMatcher
+	wr           waitRooms
 	m            *sync.Mutex
 	store        *sessions.CookieStore
 	count        int
@@ -38,6 +41,20 @@ type router struct {
 	opp3min      chan match
 	opp5min      chan match
 	opp10min     chan match
+}
+
+type inviteRoom struct {
+	clock string
+	host  user
+	opp   chan match
+}
+
+// Rooms for invite links
+type waitRooms struct {
+	rooms1min  map[string]*inviteRoom
+	rooms3min  map[string]*inviteRoom
+	rooms5min  map[string]*inviteRoom
+	rooms10min map[string]*inviteRoom
 }
 
 type match struct {
@@ -251,17 +268,348 @@ func (rout *router) handleGetUsername(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Set up a wait room and respond with the invitation id
+func (rout *router) handleInvite(w http.ResponseWriter, r *http.Request) {
+	session, err := rout.store.Get(r, "sess")
+	if err != nil {
+		log.Printf("Get cookie error: %v", err)
+	}
+	uidBlob := session.Values["uid"]
+	var (
+		uid string
+		ok bool
+	)
+	if uid, ok = uidBlob.(string); !ok {
+		uid = ksuid.New().String()
+		session.Values["uid"] = uid
+		if err := rout.store.Save(r, w, session); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	usernameBlob := session.Values["username"]
+	var username string
+	if username, ok = usernameBlob.(string); !ok {
+		username = DEFAULT_USERNAME
+	}
+	vars := mux.Vars(r)
+	clock := vars["clock"]
+	if clock == "" {
+		http.Error(w, "Empty clock time", http.StatusBadRequest)
+		return
+	}
+
+	// Set up room to wait for host and invited users
+	var rooms map[string]*inviteRoom
+	switch clock {
+	case "1":
+		rooms = rout.wr.rooms1min
+	case "3":
+		rooms = rout.wr.rooms3min
+	case "5":
+		rooms = rout.wr.rooms5min
+	case "10":
+		rooms = rout.wr.rooms10min
+	default:
+		http.Error(w, "Invalid clock time:" + clock, http.StatusBadRequest)
+		return
+	}
+	inviteId := ksuid.New().String()
+	rout.m.Lock()
+	rooms[inviteId] = &inviteRoom{
+		clock: clock,
+		host:  user{
+			id:       uid,
+			username: username,
+		},
+	}
+	rout.m.Unlock()
+
+	res := map[string]string{
+		"inviteId": inviteId,
+	}
+
+	resB, err := json.Marshal(res)
+	if err != nil {
+		log.Println("Could not marshal response:", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	if _, err := w.Write(resB); err != nil {
+		log.Println(err)
+	}
+}
+
+func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
+	session, _ := rout.store.Get(r, "sess")
+	uidBlob := session.Values["uid"]
+	var (
+		uid string
+		ok bool
+	)
+	if uid, ok = uidBlob.(string); !ok {
+		uid = ksuid.New().String()
+		session.Values["uid"] = uid
+		if err := rout.store.Save(r, w, session); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	usernameBlob := session.Values["username"]
+	username, ok := usernameBlob.(string)
+	if !ok {
+		username = DEFAULT_USERNAME
+	}
+	vars := mux.Vars(r)
+	inviteId := vars["id"]
+	clock := vars["clock"]
+	if clock == "" {
+		http.Error(w, "Unset clock", http.StatusBadRequest)
+		return
+	}
+	var rooms map[string]*inviteRoom
+	switch clock {
+	case "1":
+		rooms = rout.wr.rooms1min
+	case "3":
+		rooms = rout.wr.rooms3min
+	case "5":
+		rooms = rout.wr.rooms5min
+	case "10":
+		rooms = rout.wr.rooms10min
+	default:
+		http.Error(w, "Invalid clock: " + clock, http.StatusBadRequest)
+		return
+	}
+	room, ok := rooms[inviteId]
+	if !ok {
+		http.Error(w, "Room not found", http.StatusNotFound)
+		return
+	}
+	// Upgrade connection to websocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "Could not upgrade conn", http.StatusInternalServerError)
+		return
+	}
+	// Prepare the private channel
+	rout.m.Lock()
+	room.opp = make(chan match)
+	rooms[inviteId] = room
+	rout.m.Unlock()
+	
+	conn.SetReadLimit(maxMessageSize)
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error { conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	// reading goroutine
+	go func() {
+		defer func() {
+			conn.Close()
+		}()
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("error: %v", err)
+				}
+				break
+			}
+		}
+	}()
+	// Wait opponent for up to 5 minutes
+	deadline := time.NewTimer(60 * 5 * time.Second)
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		// delete waitRoom
+		rout.m.Lock()
+		delete(rooms, inviteId)
+		rout.m.Unlock()
+		ticker.Stop()
+		conn.Close()
+	}()
+	select {
+	case match := <-room.opp:
+		deadline.Stop()
+		if match.gameId == "" {
+			// game cancelled
+			return
+		}
+		var color, opp string
+		if match.white.id != "" {
+			color = "black"
+			match.black = user{
+				id:       uid,
+				username: username,
+			}
+			opp = match.white.username
+		} else {
+			color = "white"
+			match.white = user{
+				id: uid,
+				username: username,
+			}
+			opp = match.black.username
+		}
+		rout.makeRoom(match)
+
+		playRoomId := match.gameId
+		res := map[string]string{
+			"color":  color,
+			"roomId": playRoomId,
+			"opp":    opp,
+		}
+		resB, err := json.Marshal(res)
+		if err != nil {
+			log.Println("Could not marshal response:", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w, err := conn.NextWriter(websocket.TextMessage)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		w.Write(resB)
+
+		if err := w.Close(); err != nil {
+			log.Println(err)
+		}
+	case <-deadline.C:
+		res := map[string]string{
+			"OOT": "true",
+		}
+
+		resB, err := json.Marshal(res)
+		if err != nil {
+			log.Println("Could not marshal response:", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w, err := conn.NextWriter(websocket.TextMessage)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		w.Write(resB)
+
+		if err := w.Close(); err != nil {
+			log.Println(err)
+		}
+		return
+	}
+}
+
+func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
+	session, _ := rout.store.Get(r, "sess")
+	uidBlob := session.Values["uid"]
+	var (
+		uid string
+		ok  bool
+	)
+	if uid, ok = uidBlob.(string); !ok {
+		uid = ksuid.New().String()
+		session.Values["uid"] = uid
+		if err := rout.store.Save(r, w, session); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	usernameBlob := session.Values["username"]
+	var username string
+	if username, ok = usernameBlob.(string); !ok {
+		username = DEFAULT_USERNAME
+	}
+	vars := mux.Vars(r)
+	inviteId := vars["id"]
+	if inviteId == "" {
+		http.Error(w, "Empty invite link", http.StatusBadRequest)
+		return
+	}
+	clock := vars["clock"]
+	if clock == "" {
+		http.Error(w, "Empty clock time", http.StatusBadRequest)
+		return
+	}
+	var rooms map[string]*inviteRoom
+	switch clock {
+	case "1":
+		rooms = rout.wr.rooms1min
+	case "3":
+		rooms = rout.wr.rooms3min
+	case "5":
+		rooms = rout.wr.rooms5min
+	case "10":
+		rooms = rout.wr.rooms10min
+	default:
+		http.Error(w, "Invalid clock: " + clock, http.StatusBadRequest)
+		return
+	}
+
+	room, ok := rooms[inviteId]
+	if !ok {
+		http.Error(w, "Invite link not found", http.StatusNotFound)
+		return
+	}
+
+	// Is it the same user?
+	if room.host.id == uid {
+		// Cancel invitation
+		room.opp<- match{}
+		return
+	}
+
+	gameId := ksuid.New().String()
+	match := match{
+		gameId: gameId,
+	}
+	// Randomly choose color
+	color := ""
+	if rand.Intn(2) % 2 == 0 {
+		color = "white"
+		match.white = user{
+			id: uid,
+			username: username,
+		}
+	} else {
+		color = "black"
+		match.black = user{
+			id: uid,
+			username: username,
+		}
+	}
+	room.opp<- match
+
+	res := map[string]string{
+		"color":  color,
+		"roomId": gameId,
+		"opp":    room.host.username,
+	}
+
+	resB, err := json.Marshal(res)
+	if err != nil {
+		log.Println("Could not marshal response:", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	if _, err := w.Write(resB); err != nil {
+		log.Println(err)
+	}
+}
+
 func main() {
 	flag.Parse()
-	wr := newWaitRoom()
-	go wr.listenAll()
+	rm := newRoomMatcher()
+	go rm.listenAll()
 	env, err := godotenv.Read("cookie_hash.env")
 	if err != nil {
 		log.Fatal(err)
 	}
 	key := env["SESSION_KEY"]
 	rout := &router{
-		wr:        wr,
+		rm:        rm,
 		m:         &sync.Mutex{},
 		count:     0,
 		matches:   make(map[string]match),
@@ -270,11 +618,20 @@ func main() {
 		opp3min:   make(chan match),
 		opp5min:   make(chan match),
 		opp10min:  make(chan match),
+		wr: waitRooms{
+			rooms1min: make(map[string]*inviteRoom),
+			rooms3min: make(map[string]*inviteRoom),
+			rooms5min: make(map[string]*inviteRoom),
+			rooms10min: make(map[string]*inviteRoom),
+		},
 	}
 
 	r := mux.NewRouter()
 	r.HandleFunc("/play", rout.handlePlay).Methods("GET").Queries("clock", "{clock}")
+	r.HandleFunc("/invite", rout.handleInvite).Methods("GET").Queries("clock", "{clock}")
 	r.HandleFunc("/game", rout.handleGame).Queries("id", "{id}", "clock", "{clock}")
+	r.HandleFunc("/wait", rout.handleWait).Queries("id", "{id}")
+	r.HandleFunc("/join", rout.handleInvite).Queries("id", "{id}")
 	r.HandleFunc("/username", rout.handlePostUsername).Methods("POST")
 	r.HandleFunc("/username", rout.handleGetUsername).Methods("GET")
     c := cors.New(cors.Options{
