@@ -100,7 +100,6 @@ func (p *player) readPump() {
 	defer func() {
 		p.room.unregister <-p
 		p.conn.Close()
-		p.cleanup()
 	}()
 	p.conn.SetReadLimit(maxMessageSize)
 	p.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -361,4 +360,6 @@ func (rout *router) serveGame(w http.ResponseWriter, r *http.Request,
 	// new goroutines.
 	go p.writePump()
 	go p.readPump()
+
+	rout.ldHub.startGame<- true
 }

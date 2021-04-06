@@ -41,6 +41,7 @@ type router struct {
 	opp3min      chan match
 	opp5min      chan match
 	opp10min     chan match
+	ldHub        *livedataHub
 }
 
 type inviteRoom struct {
@@ -227,9 +228,9 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	}
 	cleanup := func() {
 		rout.m.Lock()
-		defer rout.m.Unlock()
-		rout.count--
 		delete(rout.matches, gameId)
+		rout.m.Unlock()
+		rout.ldHub.finishGame<- true
 	}
 	if vars["clock"] == "" {
 		http.Error(w, "Unset clock", http.StatusBadRequest)
@@ -340,6 +341,7 @@ func (rout *router) handleInvite(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Wait room for private game with a friend
 func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 	// Upgrade connection to websocket
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -482,6 +484,7 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Join game from invite link
 func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 	session, _ := rout.store.Get(r, "sess")
 	uidBlob := session.Values["uid"]
@@ -604,6 +607,7 @@ func main() {
 			rooms5min: make(map[string]*inviteRoom),
 			rooms10min: make(map[string]*inviteRoom),
 		},
+		ldHub: newLivedataHub(),
 	}
 
 	r := mux.NewRouter()
@@ -614,6 +618,7 @@ func main() {
 	r.HandleFunc("/join", rout.handleJoin).Queries("id", "{id}", "clock", "{clock}")
 	r.HandleFunc("/username", rout.handlePostUsername).Methods("POST")
 	r.HandleFunc("/username", rout.handleGetUsername).Methods("GET")
+	r.HandleFunc("/livedata", rout.handleLivedata).Methods("GET")
     c := cors.New(cors.Options{
 		AllowedOrigins: []string{"http://localhost:8080"},
 		AllowCredentials: true,

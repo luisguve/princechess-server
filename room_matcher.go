@@ -80,6 +80,7 @@ func (*roomMatcher) listen(register chan *player, finishGame chan string, rooms 
 					stopClocks:             make(chan bool),
 					cleanup: func() {
 						finishGame<- p.gameId
+						p.cleanup()
 					},
 				}
 				go r.hostGame()
