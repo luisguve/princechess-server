@@ -611,7 +611,7 @@ func main() {
 	r.HandleFunc("/invite", rout.handleInvite).Methods("GET").Queries("clock", "{clock}")
 	r.HandleFunc("/game", rout.handleGame).Queries("id", "{id}", "clock", "{clock}")
 	r.HandleFunc("/wait", rout.handleWait).Queries("id", "{id}", "clock", "{clock}")
-	r.HandleFunc("/join", rout.handleInvite).Queries("id", "{id}")
+	r.HandleFunc("/join", rout.handleJoin).Queries("id", "{id}", "clock", "{clock}")
 	r.HandleFunc("/username", rout.handlePostUsername).Methods("POST")
 	r.HandleFunc("/username", rout.handleGetUsername).Methods("GET")
     c := cors.New(cors.Options{
