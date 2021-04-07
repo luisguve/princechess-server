@@ -43,7 +43,7 @@ func (rout *router) handleLivedata(w http.ResponseWriter, r *http.Request) {
 		conn: conn,
 		send: make(chan livedata, 256),
 	}
-	rout.ldHub.register <-client
+	rout.ldHub.register<- client
 
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines.
