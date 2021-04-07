@@ -58,6 +58,15 @@ type waitRooms struct {
 	rooms10min map[string]*inviteRoom
 }
 
+func newWaitRooms() {
+	return waitRooms{
+		rooms1min:  make(map[string]*inviteRoom),
+		rooms3min:  make(map[string]*inviteRoom),
+		rooms5min:  make(map[string]*inviteRoom),
+		rooms10min: make(map[string]*inviteRoom),
+	}
+}
+
 type match struct {
 	gameId string
 	white  user
@@ -584,31 +593,25 @@ func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	flag.Parse()
-	rm := newRoomMatcher()
-	go rm.listenAll()
 	env, err := godotenv.Read("cookie_hash.env")
 	if err != nil {
 		log.Fatal(err)
 	}
 	key := env["SESSION_KEY"]
 	rout := &router{
-		rm:        rm,
-		m:         &sync.Mutex{},
-		count:     0,
-		matches:   make(map[string]match),
-		store:     sessions.NewCookieStore([]byte(key)),
-		opp1min:   make(chan match),
-		opp3min:   make(chan match),
-		opp5min:   make(chan match),
-		opp10min:  make(chan match),
-		wr: waitRooms{
-			rooms1min: make(map[string]*inviteRoom),
-			rooms3min: make(map[string]*inviteRoom),
-			rooms5min: make(map[string]*inviteRoom),
-			rooms10min: make(map[string]*inviteRoom),
-		},
-		ldHub: newLivedataHub(),
+		m:        &sync.Mutex{},
+		count:    0,
+		matches:  make(map[string]match),
+		store:    sessions.NewCookieStore([]byte(key)),
+		opp1min:  make(chan match),
+		opp3min:  make(chan match),
+		opp5min:  make(chan match),
+		opp10min: make(chan match),
+		rm:       newRoomMatcher(),
+		wr:       newWaitRooms(),
+		ldHub:    newLivedataHub(),
 	}
+	go rout.rm.listenAll()
 
 	r := mux.NewRouter()
 	r.HandleFunc("/play", rout.handlePlay).Methods("GET").Queries("clock", "{clock}")
