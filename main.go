@@ -58,7 +58,7 @@ type waitRooms struct {
 	rooms10min map[string]*inviteRoom
 }
 
-func newWaitRooms() {
+func newWaitRooms() waitRooms {
 	return waitRooms{
 		rooms1min:  make(map[string]*inviteRoom),
 		rooms3min:  make(map[string]*inviteRoom),
