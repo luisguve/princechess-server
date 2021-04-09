@@ -53,16 +53,16 @@ func (rout *router) handleLivedata(w http.ResponseWriter, r *http.Request) {
 }
 
 type livedataHub struct {
-	// Registered clients.
-	clients map[string]*livedataClient
+	// Players online.
+	online map[string]*livedataClient
 
-	// Number of ongoing games
-	games int
+	// Number of players in ongoing games
+	playing int
 
-	// Increment number of ongoing games
+	// Increment number of players in ongoing games
 	startGame  chan bool
 
-	// Decrement number of ongoing games
+	// Decrement number of players in ongoing games
 	finishGame chan bool
 
 	// Register requests from the clients.
@@ -74,8 +74,8 @@ type livedataHub struct {
 
 func newLivedataHub() *livedataHub {
 	return &livedataHub{
-		clients:    make(map[string]*livedataClient),
-		games:      0,
+		online:     make(map[string]*livedataClient),
+		playing:    0,
 		startGame:  make(chan bool),
 		finishGame: make(chan bool),
 		register:   make(chan *livedataClient),
@@ -87,29 +87,29 @@ func (hub *livedataHub) run() {
 	for {
 		select {
 		case client := <-hub.register:
-			hub.clients[client.uid] = client
+			hub.online[client.uid] = client
 		case uid := <-hub.unregister:
-			if client, ok := hub.clients[uid]; ok {
+			if client, ok := hub.online[uid]; ok {
 				close(client.send)
-				delete(hub.clients, uid)
+				delete(hub.online, uid)
 			}
 		case <-hub.startGame:
-			hub.games++
+			hub.playing++
 		case <-hub.finishGame:
-			hub.games--
+			hub.playing -= 2
 		}
 		// Send real-time info to every client.
 		// Note: potentially a time-costly operation).
 		info := livedata{
-			Players: len(hub.clients) + (hub.games * 2),
-			Games:   hub.games,
+			Players: len(hub.online) + (hub.playing),
+			Games:   hub.playing / 2,
 		}
-		for uid, client := range hub.clients {
+		for uid, client := range hub.online {
 			select {
 			case client.send<- info:
 			default:
 				close(client.send)
-				delete(hub.clients, uid)
+				delete(hub.online, uid)
 			}
 		}
 	}
