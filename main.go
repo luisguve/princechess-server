@@ -612,6 +612,7 @@ func main() {
 		ldHub:    newLivedataHub(),
 	}
 	go rout.rm.listenAll()
+	go rout.ldHub.run()
 
 	r := mux.NewRouter()
 	r.HandleFunc("/play", rout.handlePlay).Methods("GET").Queries("clock", "{clock}")

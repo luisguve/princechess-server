@@ -32,6 +32,7 @@ func (rout *router) handleLivedata(w http.ResponseWriter, r *http.Request) {
 		uid = ksuid.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
+			log.Println(err)
 			payload := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
 			conn.WriteMessage(websocket.CloseMessage, payload)
 			return
