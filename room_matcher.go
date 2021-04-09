@@ -44,6 +44,10 @@ func newRoomMatcher() *roomMatcher {
 		registerPlayer3Min:  make(chan *player),
 		registerPlayer5Min:  make(chan *player),
 		registerPlayer10Min: make(chan *player),
+		finish1MinGame:      make(chan string),
+		finish3MinGame:      make(chan string),
+		finish5MinGame:      make(chan string),
+		finish10MinGame:     make(chan string),
 	}
 }
 
@@ -89,7 +93,6 @@ func (*roomMatcher) listen(register chan *player, finishGame chan string, rooms 
 			}
 			rooms[p.gameId] = pp
 		case gameId := <-finishGame:
-			log.Println("Deleting room", gameId)
 			delete(rooms, gameId)
 		}
 	}
