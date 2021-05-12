@@ -48,6 +48,19 @@ type Room struct {
 
 	// Cleanup routine after the game ends
 	cleanup func()
+
+	// Callback to switch colors on rematch
+	switchColors func()
+
+	// Channel to listen to when one of the players disconnects
+	disconnect chan *player
+	// Channel to listen to when one of the players reconnects
+	reconnect chan *player
+	// Variable to know when one of the players disconnected
+	waitingPlayer bool
+	waitingTimer *time.Timer
+
+	pgn string
 }
 
 func (r Room) stopTimers() {
@@ -59,7 +72,7 @@ func (r Room) stopTimers() {
 	}
 }
 
-func (r Room) hostGame() {
+func (r *Room) hostGame() {
 	defer r.cleanup()
 	defer func() {
 		if r.white.sendMove != nil {
@@ -68,11 +81,84 @@ func (r Room) hostGame() {
 		if r.black.sendMove != nil {
 			close(r.black.sendMove)
 		}
+		if r.waitingTimer != nil {
+			r.waitingTimer.Stop()
+		}
 		r.stopTimers()
 	}()
+	// Inform both players that the opponent is ready.
+	r.white.oppReady<- true
+	r.black.oppReady<- true
 	for {
 		ChannelSelector:
 		select {
+		case p := <-r.disconnect:
+			p.disconnect<- true
+			if r.waitingPlayer {
+				// Both players left the room
+				return
+			}
+			var notify *player
+			switch p.color {
+			case "white":
+				// White disconnected - inform black player
+				notify = r.black
+			case "black":
+				// Black disconnected - inform white player
+				notify = r.white
+			default:
+				log.Println("Invalid color player:", p.color)
+				return
+			}
+			notify.oppDisconnected<- true
+			// Wait player for 25 seconds
+			r.waitingTimer = time.AfterFunc(5 * time.Second, func() {
+				notify.oppGone<- true
+			})
+			r.waitingPlayer = true
+		case p := <-r.reconnect:
+			r.waitingTimer.Stop()
+			r.waitingPlayer = false
+			switch p.color {
+			case "white":
+				// reset player clock
+				p.clock = r.white.clock
+				p.lastMove = r.white.lastMove
+				p.timeLeft = r.white.timeLeft
+				// set room
+				p.room = r
+				// reset player
+				r.white = p
+				// White reconnected - inform black player
+				r.black.oppReconnected<- true
+			case "black":
+				// reset player clock
+				p.clock = r.black.clock
+				p.lastMove = r.black.lastMove
+				p.timeLeft = r.black.timeLeft
+				// set room
+				p.room = r
+				// reset player
+				r.black = p
+				// Black reconnected - inform white player
+				r.white.oppReconnected<- true
+			default:
+				log.Println("Invalid color player:", p.color)
+				return
+			}
+			data := map[string]string{
+				"pgn": r.pgn,
+			}
+			pgn, err := json.Marshal(data)
+			if err != nil {
+				log.Println("Could not marshal data:", err)
+				break
+			}
+			select {
+			case p.sendMove<- pgn:
+			default:
+				return
+			}
 		case <-r.unregister:
 			return
 		case msg := <-r.broadcastChat:
@@ -89,6 +175,8 @@ func (r Room) hostGame() {
 				return
 			}
 		case move := <-r.broadcastMove:
+			// Save pgn
+			r.pgn = move.Pgn
 			var turn, opp *player
 
 			switch move.Color {
@@ -136,12 +224,13 @@ func (r Room) hostGame() {
 			}
 			data = map[string]interface{}{
 				"oppClock": opp.timeLeft.Milliseconds(),
-				"clock": turn.timeLeft.Milliseconds(),
+				"clock":    turn.timeLeft.Milliseconds(),
 			}
 
 			select {
 			case opp.sendMove<- move.move:
-			default: return
+			default:
+				// Opponent's connection was lost.
 			}
 			// Send me the opponent's time left.
 			var oppTimeLeft []byte
@@ -151,9 +240,13 @@ func (r Room) hostGame() {
 			}
 			select {
 			case turn.sendMove<- oppTimeLeft:
-			default: return
+			default:
+				// Turn's connection was lost.
 			}
 		case playerColor := <-r.broadcastNoTime:
+			if r.waitingPlayer {
+				break
+			}
 			// Who ran out of time?
 			switch playerColor {
 			case "white":
@@ -167,6 +260,9 @@ func (r Room) hostGame() {
 				return
 			}
 		case playerColor := <-r.broadcastDrawOffer:
+			if r.waitingPlayer {
+				break
+			}
 			// Who is offering draw?
 			switch playerColor {
 			case "white":
@@ -180,6 +276,9 @@ func (r Room) hostGame() {
 				return
 			}
 		case playerColor := <-r.broadcastAcceptDraw:
+			if r.waitingPlayer {
+				break
+			}
 			// Who is accepting draw?
 			switch playerColor {
 			case "white":
@@ -194,6 +293,9 @@ func (r Room) hostGame() {
 			}
 			r.stopTimers()
 		case playerColor := <-r.broadcastResign:
+			if r.waitingPlayer {
+				break
+			}
 			// Who is resigning?
 			switch playerColor {
 			case "white":
@@ -210,6 +312,9 @@ func (r Room) hostGame() {
 		case <-r.stopClocks:
 			r.stopTimers()
 		case playerColor := <-r.broadcastRematchOffer:
+			if r.waitingPlayer {
+				break
+			}
 			// Who is offering rematch?
 			switch playerColor {
 			case "white":
@@ -223,6 +328,9 @@ func (r Room) hostGame() {
 				return
 			}
 		case playerColor := <-r.broadcastAcceptRematch:
+			if r.waitingPlayer {
+				break
+			}
 			// Who is accepting the rematch?
 			switch playerColor {
 			case "white":
@@ -236,6 +344,7 @@ func (r Room) hostGame() {
 				return
 			}
 			// Switch colors and reset clocks
+			r.switchColors()
 			r.white, r.black = switchColors(r.white, r.black)
 			r.white.timeLeft = r.duration
 			r.white.lastMove = time.Time{}
