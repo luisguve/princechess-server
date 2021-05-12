@@ -57,6 +57,11 @@ func (*roomMatcher) listen(register chan *player, finishGame chan string, rooms 
 		select {
 		case p := <-register:
 			pp := rooms[p.gameId]
+			// See if user is reconnecting
+			if pp.white != nil && pp.black != nil {
+				pp.white.room.reconnect<- p
+				break
+			}
 			switch p.color {
 			case "white":
 				pp.white = p
@@ -86,6 +91,9 @@ func (*roomMatcher) listen(register chan *player, finishGame chan string, rooms 
 						finishGame<- p.gameId
 						p.cleanup()
 					},
+					switchColors: p.switchColors,
+					disconnect:   make(chan *player),
+					reconnect:    make(chan *player),
 				}
 				go r.hostGame()
 				pp.white.room = r
