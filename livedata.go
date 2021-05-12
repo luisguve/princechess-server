@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/segmentio/ksuid"
+	idGen "github.com/rs/xid"
+	// idGen "github.com/segmentio/ksuid"
 )
 
 // Send information of users connected and ongoing games
@@ -29,7 +30,7 @@ func (rout *router) handleLivedata(w http.ResponseWriter, r *http.Request) {
 		ok bool
 	)
 	if uid, ok = uidBlob.(string); !ok {
-		uid = ksuid.New().String()
+		uid = idGen.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
 			log.Println(err)
@@ -57,13 +58,13 @@ type livedataHub struct {
 	online map[string]*livedataClient
 
 	// Number of players in ongoing games
-	playing int
+	playing map[string]bool
 
 	// Increment number of players in ongoing games
-	startGame  chan bool
+	joinPlayer chan string
 
 	// Decrement number of players in ongoing games
-	finishGame chan bool
+	finishGame chan match
 
 	// Register requests from the clients.
 	register   chan *livedataClient
@@ -75,9 +76,9 @@ type livedataHub struct {
 func newLivedataHub() *livedataHub {
 	return &livedataHub{
 		online:     make(map[string]*livedataClient),
-		playing:    0,
-		startGame:  make(chan bool),
-		finishGame: make(chan bool),
+		playing:    make(map[string]bool),
+		joinPlayer: make(chan string),
+		finishGame: make(chan match),
 		register:   make(chan *livedataClient),
 		unregister: make(chan string),
 	}
@@ -93,25 +94,28 @@ func (hub *livedataHub) run() {
 				close(client.send)
 				delete(hub.online, uid)
 			}
-		case <-hub.startGame:
-			hub.playing++
-		case <-hub.finishGame:
-			hub.playing -= 2
+		case userId := <-hub.joinPlayer:
+			hub.playing[userId] = true
+		case players := <-hub.finishGame:
+			delete(hub.playing, players.white.id)
+			delete(hub.playing, players.black.id)
+		}
+		info := livedata{
+			Players: len(hub.online) + len(hub.playing),
+			Games:   len(hub.playing) / 2,
 		}
 		// Send real-time info to every client.
 		// Note: potentially a time-costly operation).
-		info := livedata{
-			Players: len(hub.online) + (hub.playing),
-			Games:   hub.playing / 2,
-		}
-		for uid, client := range hub.online {
-			select {
-			case client.send<- info:
-			default:
-				close(client.send)
-				delete(hub.online, uid)
+		go func() {
+			for uid, client := range hub.online {
+				select {
+				case client.send<- info:
+				default:
+					close(client.send)
+					delete(hub.online, uid)
+				}
 			}
-		}
+		}()
 	}
 }
 
