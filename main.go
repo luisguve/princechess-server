@@ -19,7 +19,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
     "github.com/rs/cors"
-	"github.com/segmentio/ksuid"
+	idGen "github.com/rs/xid"
+	// "github.com/segmentio/ksuid"
 )
 
 const DEFAULT_USERNAME = "mistery"
@@ -124,7 +125,7 @@ func (rout *router) newMatch(uid, username string, waiting *user, opp chan match
 			rout.m.Unlock()
 			return rout.newMatch(uid, username, waiting, opp)
 		}
-		playRoomId = ksuid.New().String()
+		playRoomId = idGen.New().String()
 		opp<- match{
 			gameId: playRoomId,
 			black:  user{
@@ -151,7 +152,7 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 		ok bool
 	)
 	if uid, ok = uidBlob.(string); !ok {
-		uid = ksuid.New().String()
+		uid = idGen.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -239,7 +240,15 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 		rout.m.Lock()
 		delete(rout.matches, gameId)
 		rout.m.Unlock()
-		rout.ldHub.finishGame<- true
+		rout.ldHub.finishGame<- match
+	}
+	switchColors := func() {
+		rout.m.Lock()
+		temp := match.white
+		match.white = match.black
+		match.black = temp
+		rout.matches[gameId] = match
+		rout.m.Unlock()
 	}
 	if vars["clock"] == "" {
 		http.Error(w, "Unset clock", http.StatusBadRequest)
@@ -255,7 +264,7 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		username = DEFAULT_USERNAME
 	}
-	rout.serveGame(w, r, gameId, color, clock, cleanup, username, uid)
+	rout.serveGame(w, r, gameId, color, clock, cleanup, switchColors, username, uid)
 }
 
 func (rout *router) handlePostUsername(w http.ResponseWriter, r *http.Request) {
@@ -290,7 +299,7 @@ func (rout *router) handleInvite(w http.ResponseWriter, r *http.Request) {
 		ok bool
 	)
 	if uid, ok = uidBlob.(string); !ok {
-		uid = ksuid.New().String()
+		uid = idGen.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -324,7 +333,7 @@ func (rout *router) handleInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid clock time:" + clock, http.StatusBadRequest)
 		return
 	}
-	inviteId := ksuid.New().String()
+	inviteId := idGen.New().String()
 	rout.m.Lock()
 	rooms[inviteId] = &inviteRoom{
 		clock: clock,
@@ -367,7 +376,7 @@ func (rout *router) handleWait(w http.ResponseWriter, r *http.Request) {
 		ok bool
 	)
 	if uid, ok = uidBlob.(string); !ok {
-		uid = ksuid.New().String()
+		uid = idGen.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
 			payload := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
@@ -502,7 +511,7 @@ func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 		ok  bool
 	)
 	if uid, ok = uidBlob.(string); !ok {
-		uid = ksuid.New().String()
+		uid = idGen.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -553,7 +562,7 @@ func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gameId := ksuid.New().String()
+	gameId := idGen.New().String()
 	match := match{
 		gameId: gameId,
 	}
