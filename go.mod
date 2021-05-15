@@ -1,3 +1,5 @@
+// +heroku goVersion go1.14
+
 module github.com/luisguve/princechess-server
 
 go 1.14
