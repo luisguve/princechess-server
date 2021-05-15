@@ -5,11 +5,12 @@
 package main
 
 import (
-	"flag"
+	// "flag"
 	"encoding/json"
 	"log"
 	"net/http"
 	"math/rand"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ import (
 
 const DEFAULT_USERNAME = "mistery"
 
-var port = flag.String("port", "8000", "http service address")
+// var port = flag.String("port", "8000", "http service address")
 
 type router struct {
 	rm           *roomMatcher
@@ -601,12 +602,15 @@ func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	flag.Parse()
-	env, err := godotenv.Read("cookie_hash.env")
-	if err != nil {
-		log.Fatal(err)
+	// flag.Parse()
+	key := os.Getenv("PRINCE_SESSION_KEY")
+	if key == "" {
+		env, err := godotenv.Read("cookie_hash.env")
+		if err != nil {
+			log.Fatal(err)
+		}
+		key = env["SESSION_KEY"]
 	}
-	key := env["SESSION_KEY"]
 	rout := &router{
 		m:        &sync.Mutex{},
 		count:    0,
@@ -633,15 +637,21 @@ func main() {
 	r.HandleFunc("/username", rout.handleGetUsername).Methods("GET")
 	r.HandleFunc("/livedata", rout.handleLivedata).Methods("GET")
     c := cors.New(cors.Options{
-		AllowedOrigins: []string{"http://localhost:8080"},
+		AllowedOrigins: []string{"http://localhost:8080", "https://princechess.netlify.app"},
 		AllowCredentials: true,
 		// Enable Debugging for testing, consider disabling in production
 		Debug: false,
 	})
 	handler := c.Handler(r)
+	port := os.Getenv("PORT")
+	addr := ":" + port
+	if port == "" {
+		port = "8000"
+		addr = "127.0.0.1:" + port
+	}
     srv := &http.Server{
-        Handler:      handler,
-        Addr:         "127.0.0.1:" + *port,
+        Handler: handler,
+        Addr:    addr,
         // Good practice: enforce timeouts for servers you create!
         WriteTimeout: 15 * time.Second,
         ReadTimeout:  15 * time.Second,
