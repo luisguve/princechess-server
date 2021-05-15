@@ -212,7 +212,10 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
-	session, _ := rout.store.Get(r, "sess")
+	session, err := rout.store.Get(r, "sess")
+	if err != nil {
+		log.Println("Error getting session:", err)
+	}
 	uidBlob := session.Values["uid"]
 	var uid string
 	var ok bool
