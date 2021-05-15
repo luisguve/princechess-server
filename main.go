@@ -217,6 +217,7 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	var uid string
 	var ok bool
 	if uid, ok = uidBlob.(string); !ok {
+		log.Println("Unknown user")
 		http.Error(w, "Unknown user", http.StatusUnauthorized)
 		return
 	}
@@ -224,6 +225,7 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	gameId := vars["id"]
 	match, ok := rout.matches[gameId]
 	if !ok {
+		log.Printf("Match %v not found\n", gameId)
 		http.Error(w, "Match not found", http.StatusNotFound)
 		return
 	}
@@ -234,6 +236,7 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	case match.black.id:
 		color = "black"
 	default:
+		log.Println("User is neither black nor white")
 		http.Error(w, "User is neither black nor white", http.StatusBadRequest)
 		return
 	}
@@ -252,11 +255,13 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 		rout.m.Unlock()
 	}
 	if vars["clock"] == "" {
+		log.Println("Unset clock")
 		http.Error(w, "Unset clock", http.StatusBadRequest)
 		return
 	}
 	clock, err := strconv.Atoi(vars["clock"])
 	if err != nil {
+		log.Println("Invalid clock")
 		http.Error(w, "Invalid clock", http.StatusBadRequest)
 		return
 	}
