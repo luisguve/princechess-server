@@ -216,11 +216,15 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Println("Error getting session:", err)
 	}
-	uidBlob := session.Values["uid"]
-	var uid string
-	var ok bool
-	if uid, ok = uidBlob.(string); !ok {
+	uidBlob, ok := session.Values["uid"]
+	if !ok {
 		log.Println("Unknown user")
+		http.Error(w, "Unknown user", http.StatusUnauthorized)
+		return
+	}
+	var uid string
+	if uid, ok = uidBlob.(string); !ok {
+		log.Println("Could not type assert uidBlob to string")
 		http.Error(w, "Unknown user", http.StatusUnauthorized)
 		return
 	}
@@ -611,19 +615,27 @@ func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	// flag.Parse()
-	key := os.Getenv("PRINCE_SESSION_KEY")
-	if key == "" {
+	authKey := os.Getenv("PRINCE_SESSION_KEY")
+	if authKey == "" {
 		env, err := godotenv.Read("cookie_hash.env")
 		if err != nil {
 			log.Fatal(err)
 		}
-		key = env["SESSION_KEY"]
+		authKey = env["SESSION_KEY"]
+	}
+	encKey := os.Getenv("PRINCE_ENC_KEY")
+	if encKey == "" {
+		env, err := godotenv.Read("cookie_hash.env")
+		if err != nil {
+			log.Fatal(err)
+		}
+		encKey = env["ENC_KEY"]
 	}
 	rout := &router{
 		m:        &sync.Mutex{},
 		count:    0,
 		matches:  make(map[string]match),
-		store:    sessions.NewCookieStore([]byte(key)),
+		store:    sessions.NewCookieStore([]byte(authKey), []byte(encKey)),
 		opp1min:  make(chan match),
 		opp3min:  make(chan match),
 		opp5min:  make(chan match),
