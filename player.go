@@ -102,7 +102,9 @@ type message struct {
 // reads from this goroutine.
 func (p *player) readPump() {
 	defer func() {
-		p.room.disconnect<- p
+		if p.room != nil {
+			p.room.disconnect<- p
+		}
 		p.sendMove = nil
 		p.conn.Close()
 	}()
