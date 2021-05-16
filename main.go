@@ -158,6 +158,7 @@ func (rout *router) handlePlay(w http.ResponseWriter, r *http.Request) {
 		uid = idGen.New().String()
 		session.Values["uid"] = uid
 		if err := rout.store.Save(r, w, session); err != nil {
+			log.Println(err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
