@@ -657,11 +657,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	sessStore := sessions.NewCookieStore([]byte(authKey), encKeyB)
+	sessStore.Options = &sessions.Options{
+	    Path:     "/",
+	    Secure:   true,
+	    SameSite: http.SameSiteNoneMode,
+	}
 	rout := &router{
 		m:        &sync.Mutex{},
 		count:    0,
 		matches:  make(map[string]match),
-		store:    sessions.NewCookieStore([]byte(authKey), encKeyB),
+		store:    sessStore,
 		opp1min:  make(chan match),
 		opp3min:  make(chan match),
 		opp5min:  make(chan match),
