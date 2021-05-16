@@ -7,7 +7,9 @@ package main
 import (
 	// "flag"
 	"encoding/json"
+	"fmt"
 	"log"
+	"errors"
 	"net/http"
 	"math/rand"
 	"os"
@@ -613,6 +615,32 @@ func (rout *router) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// getEncryptionKey ensures the provided encryption key is the
+// correct size (16, 24 or 32 bytes). If it's too large it's truncated to the
+// max. If it's otherwise incorrect size wise an error is returned. Otherwise
+// the []byte version is returned.
+func getEncryptionKey() ([]byte, error) {
+	encKey := os.Getenv("PRINCE_ENC_KEY")
+	if encKey == "" {
+		env, err := godotenv.Read("cookie_hash.env")
+		if err != nil {
+			return nil, err
+		}
+		encKey = env["ENC_KEY"]
+	}
+	lek := len(encKey)
+	switch {
+	case lek >= 0 && lek < 16, lek > 16 && lek < 24, lek > 24 && lek < 32:
+		return nil, fmt.Errorf("Encryption key needs to be either 16, 24 or 32 characters long or longer, was: %d", lek)
+	case lek == 16, lek == 24, lek == 32:
+		return []byte(encKey), nil
+	case lek > 32:
+		return []byte(encKey[0:32]), nil
+	default:
+		return nil, errors.New("invalid Encryption key: " + encKey)
+	}
+}
+
 func main() {
 	// flag.Parse()
 	authKey := os.Getenv("PRINCE_SESSION_KEY")
@@ -623,19 +651,15 @@ func main() {
 		}
 		authKey = env["SESSION_KEY"]
 	}
-	encKey := os.Getenv("PRINCE_ENC_KEY")
-	if encKey == "" {
-		env, err := godotenv.Read("cookie_hash.env")
-		if err != nil {
-			log.Fatal(err)
-		}
-		encKey = env["ENC_KEY"]
+	encKeyB, err := getEncryptionKey()
+	if err != nil {
+		log.Fatal(err)
 	}
 	rout := &router{
 		m:        &sync.Mutex{},
 		count:    0,
 		matches:  make(map[string]match),
-		store:    sessions.NewCookieStore([]byte(authKey), []byte(encKey)),
+		store:    sessions.NewCookieStore([]byte(authKey), encKeyB),
 		opp1min:  make(chan match),
 		opp3min:  make(chan match),
 		opp5min:  make(chan match),

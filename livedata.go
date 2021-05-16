@@ -22,7 +22,7 @@ func (rout *router) handleLivedata(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := rout.store.Get(r, "sess")
 	if err != nil {
-		log.Printf("Get cookie error: %v", err)
+		log.Printf("handleLivedata: get cookie error: %v", err)
 	}
 	uidBlob := session.Values["uid"]
 	var (
