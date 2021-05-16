@@ -222,7 +222,6 @@ func (rout *router) handleGame(w http.ResponseWriter, r *http.Request) {
 	uidBlob, ok := session.Values["uid"]
 	if !ok {
 		log.Println("Unknown user")
-		fmt.Printf("session.Values: %v\n", session.Values)
 		http.Error(w, "Unknown user", http.StatusUnauthorized)
 		return
 	}
